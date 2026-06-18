@@ -53,17 +53,17 @@ contract PredictionMarketTest is Test {
     // --- Constructor input validation (each bad input must revert) ---
 
     function test_Constructor_RevertsOnZeroResolver() public {
-        vm.expectRevert(PredictionMarket.ZeroResolver.selector);
+        vm.expectRevert(PredictionMarket.PredictionMarket__ZeroResolver.selector);
         new PredictionMarket(collateral, address(0), closeTime, FEE_BPS);
     }
 
     function test_Constructor_RevertsOnPastCloseTime() public {
-        vm.expectRevert(PredictionMarket.CloseTimeInPast.selector);
+        vm.expectRevert(PredictionMarket.PredictionMarket__CloseTimeInPast.selector);
         new PredictionMarket(collateral, resolver, block.timestamp, FEE_BPS);
     }
 
     function test_Constructor_RevertsOnFeeTooHigh() public {
-        vm.expectRevert(PredictionMarket.FeeTooHigh.selector);
+        vm.expectRevert(PredictionMarket.PredictionMarket__FeeTooHigh.selector);
         new PredictionMarket(collateral, resolver, closeTime, 10_000); // 100% not allowed
     }
 
@@ -113,14 +113,14 @@ contract PredictionMarketTest is Test {
         market.split(100e18);
         // Spend one YES so the set is no longer complete (simulate by moving it away is
         // hard without transfer; instead try to merge MORE than owned).
-        vm.expectRevert(PredictionMarket.InsufficientYes.selector);
+        vm.expectRevert(PredictionMarket.PredictionMarket__InsufficientYes.selector);
         market.merge(150e18);
         vm.stopPrank();
     }
 
     function test_Split_RevertsOnZero() public {
         vm.prank(alice);
-        vm.expectRevert(PredictionMarket.ZeroAmount.selector);
+        vm.expectRevert(PredictionMarket.PredictionMarket__ZeroAmount.selector);
         market.split(0);
     }
 

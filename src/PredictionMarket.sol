@@ -101,22 +101,22 @@ contract PredictionMarket is ReentrancyGuard {
     // ----------------------------------------------------------------------------------
     // Custom errors (Solidity >=0.8.4) replace `require(cond, "string")`. They compile to a
     // 4-byte selector instead of storing a string, so they are cheaper to deploy and to
-    // revert with, and they can optionally carry parameters (e.g. `error FeeTooHigh(uint16)`).
+    // revert with, and they can optionally carry parameters (e.g. `error PredictionMarket__FeeTooHigh(uint16)`).
 
     /// @notice Constructor was given the zero address for the collateral token.
-    error ZeroCollateral();
+    error PredictionMarket__ZeroCollateral();
     /// @notice Constructor was given the zero address for the resolver.
-    error ZeroResolver();
+    error PredictionMarket__ZeroResolver();
     /// @notice closeTime must be strictly in the future at deployment.
-    error CloseTimeInPast();
+    error PredictionMarket__CloseTimeInPast();
     /// @notice feeBps must be below 100% (FEE_DENOM).
-    error FeeTooHigh();
+    error PredictionMarket__FeeTooHigh();
     /// @notice An amount argument was zero where a positive value is required.
-    error ZeroAmount();
+    error PredictionMarket__ZeroAmount();
     /// @notice Caller does not own enough YES tokens for this operation.
-    error InsufficientYes();
+    error PredictionMarket__InsufficientYes();
     /// @notice Caller does not own enough NO tokens for this operation.
-    error InsufficientNo();
+    error PredictionMarket__InsufficientNo();
 
     // ----------------------------------------------------------------------------------
     // Constructor
@@ -129,10 +129,10 @@ contract PredictionMarket is ReentrancyGuard {
     constructor(IERC20 collateral_, address resolver_, uint256 closeTime_, uint16 feeBps_) {
         // Validate inputs up front so a market can never be created in a broken state.
         // Pattern: check the *failure* condition, then `revert` with a named error.
-        if (address(collateral_) == address(0)) revert ZeroCollateral();
-        if (resolver_ == address(0)) revert ZeroResolver();
-        if (closeTime_ <= block.timestamp) revert CloseTimeInPast();
-        if (feeBps_ >= FEE_DENOM) revert FeeTooHigh();
+        if (address(collateral_) == address(0)) revert PredictionMarket__ZeroCollateral();
+        if (resolver_ == address(0)) revert PredictionMarket__ZeroResolver();
+        if (closeTime_ <= block.timestamp) revert PredictionMarket__CloseTimeInPast();
+        if (feeBps_ >= FEE_DENOM) revert PredictionMarket__FeeTooHigh();
 
         // Persist configuration into immutables (cheap to read, impossible to mutate later).
         collateral = collateral_;
@@ -151,7 +151,7 @@ contract PredictionMarket is ReentrancyGuard {
     ///      is the solvency invariant.
     /// @param amount units of collateral to convert into a full set
     function split(uint256 amount) external nonReentrant {
-        if (amount == 0) revert ZeroAmount();
+        if (amount == 0) revert PredictionMarket__ZeroAmount();
 
         // ---- Effects: update our internal ledger BEFORE the external token call (CEI) ----
         // Mint a matching pair into the caller's outcome balances.
@@ -171,11 +171,11 @@ contract PredictionMarket is ReentrancyGuard {
     ///      regardless of the eventual outcome, this redemption is always safe.
     /// @param amount size of the full set to merge back into collateral
     function merge(uint256 amount) external nonReentrant {
-        if (amount == 0) revert ZeroAmount();
+        if (amount == 0) revert PredictionMarket__ZeroAmount();
         // The caller must actually own a full set of this size. Solidity 0.8 reverts on
         // underflow anyway, but explicit checks give clearer, named errors.
-        if (yesBalanceOf[msg.sender] < amount) revert InsufficientYes();
-        if (noBalanceOf[msg.sender] < amount) revert InsufficientNo();
+        if (yesBalanceOf[msg.sender] < amount) revert PredictionMarket__InsufficientYes();
+        if (noBalanceOf[msg.sender] < amount) revert PredictionMarket__InsufficientNo();
 
         // ---- Effects: burn the set from the ledger first (CEI) ----
         yesBalanceOf[msg.sender] -= amount;
