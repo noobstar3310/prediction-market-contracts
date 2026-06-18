@@ -1,0 +1,20 @@
+[profile.default]
+src = "src"                 # where contract source lives
+out = "out"                 # where compiled artifacts (ABI/bytecode) are written
+libs = ["lib"]              # dependency folders (forge-std, openzeppelin-contracts)
+
+solc = "0.8.24"             # pin the compiler so builds are reproducible (OZ v5 needs >= 0.8.20)
+evm_version = "cancun"      # target EVM ruleset; "cancun" matches solc 0.8.24's default
+optimizer = true            # turn on the bytecode optimizer (cheaper gas, smaller code)
+optimizer_runs = 200        # tradeoff knob: 200 = balanced deploy-vs-runtime cost
+
+# Fuzz testing: foundry calls a test many times with random inputs to find edge cases.
+[fuzz]
+runs = 256                  # number of random inputs per fuzz test
+
+# Invariant testing: foundry fires random *sequences* of calls and checks a property
+# ("invariant") still holds after every call. This is how we prove solvency.
+[invariant]
+runs = 256                  # number of random call-sequences to try
+depth = 50                  # number of calls in each sequence
+fail_on_revert = false      # let individual calls revert; we only care about the invariant
