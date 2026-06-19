@@ -83,6 +83,24 @@ contract PredictionMarket is ReentrancyGuard {
     uint256 public totalShares;
     mapping(address => uint256) public sharesOf;
 
+    /// @notice Trading fees accumulated as bare collateral, claimable by LPs on removeLiquidity.
+    /// @dev Invariant: collateral.balanceOf(this) == totalOutcomeSupply + collectedFees
+    ///      (pre-resolution). This is the running total of fees not yet withdrawn; how that total
+    ///      is split among LPs is decided by the feePoolWeight accumulator below.
+    uint256 public collectedFees;
+
+    /// @notice Cumulative fees credited per LP share, scaled by WAD (the "feePoolWeight" / Gnosis
+    ///         MasterChef-style accumulator). Each trade adds `fee * WAD / totalShares` here.
+    /// @dev An LP's lifetime fee entitlement is `sharesOf[lp] * accFeePerShare / WAD`; subtracting
+    ///      their `feeDebt` (the entitlement already accounted at their last interaction) yields the
+    ///      fees they may still claim. This makes a share earn ONLY fees that accrued while it was
+    ///      live, which closes the just-in-time fee-theft vector (audit finding #1).
+    uint256 public accFeePerShare;
+
+    /// @notice Per-LP baseline subtracted from their gross entitlement so freshly-minted shares
+    ///         carry no claim on fees that accrued before the deposit.
+    mapping(address => uint256) public feeDebt;
+
     /// @notice Internal ledger of outcome tokens owned by each user (not ERC20s).
     mapping(address => uint256) public yesBalanceOf;
     mapping(address => uint256) public noBalanceOf;
@@ -104,6 +122,12 @@ contract PredictionMarket is ReentrancyGuard {
     /// @notice Emitted when `provider` adds `amount` collateral of liquidity and is minted `shares`.
     event LiquidityAdded(address indexed provider, uint256 amount, uint256 shares);
 
+    /// @notice Emitted when `provider` burns `shares` and withdraws `collateralOut` plus any
+    ///         residual outcome tokens (`yesOut`/`noOut`).
+    event LiquidityRemoved(
+        address indexed provider, uint256 shares, uint256 collateralOut, uint256 yesOut, uint256 noOut
+    );
+
     /// @notice Emitted on a buy: `buyer` spent `investmentAmount` collateral for `sharesOut`
     ///         tokens of `outcome`.
     event Buy(address indexed buyer, Outcome outcome, uint256 investmentAmount, uint256 sharesOut);
@@ -111,6 +135,13 @@ contract PredictionMarket is ReentrancyGuard {
     /// @notice Emitted on a sell: `seller` returned `sharesIn` tokens of `outcome` for
     ///         `returnAmount` collateral.
     event Sell(address indexed seller, Outcome outcome, uint256 returnAmount, uint256 sharesIn);
+
+    /// @notice Emitted once, when the resolver declares the winning `outcome`.
+    event Resolved(Outcome outcome);
+
+    /// @notice Emitted when `account` redeems `amount` winning `outcome` tokens for `amount`
+    ///         collateral 1:1.
+    event Redeemed(address indexed account, Outcome outcome, uint256 amount);
 
     // ----------------------------------------------------------------------------------
     // Errors
@@ -135,8 +166,8 @@ contract PredictionMarket is ReentrancyGuard {
     error PredictionMarket__InsufficientNo();
     /// @notice Operation requires a funded pool, but no liquidity has been added yet.
     error PredictionMarket__PoolNotFunded();
-    /// @notice First funding already happened; multi-LP funding arrives in Stage 4.
-    error PredictionMarket__AlreadyFunded();
+    /// @notice Caller tried to remove more LP shares than they own.
+    error PredictionMarket__InsufficientShares();
     /// @notice Outcome argument must be Yes or No (not the Unset sentinel).
     error PredictionMarket__InvalidOutcome();
     /// @notice Trading is no longer allowed because the market has reached closeTime.
@@ -145,6 +176,16 @@ contract PredictionMarket is ReentrancyGuard {
     error PredictionMarket__SlippageExceeded();
     /// @notice Requested collateral-out on a sell is too large for the pool to honor.
     error PredictionMarket__ReturnTooHigh();
+    /// @notice Caller is not the trusted resolver.
+    error PredictionMarket__NotResolver();
+    /// @notice Market has not reached closeTime yet, so it cannot be resolved.
+    error PredictionMarket__NotClosed();
+    /// @notice Market has already been resolved; the winner is set once and is final.
+    error PredictionMarket__AlreadyResolved();
+    /// @notice Operation requires the market to be resolved, but it is still open/closed.
+    error PredictionMarket__NotResolved();
+    /// @notice Caller holds no winning tokens, so there is nothing to redeem.
+    error PredictionMarket__NothingToRedeem();
 
     // ----------------------------------------------------------------------------------
     // Constructor
@@ -231,28 +272,95 @@ contract PredictionMarket is ReentrancyGuard {
     // Stage 2: liquidity (first funding), pricing, and buy/sell (the CPMM core)
     // ----------------------------------------------------------------------------------
 
-    /// @notice Seed the market with initial liquidity at a 50/50 price.
-    /// @dev Stage 2 only supports the FIRST funding (empty pool). The `amount` collateral is
-    ///      split into `amount` YES + `amount` NO, both kept as equal reserves (so price is
-    ///      0.50 each), and the funder is minted `amount` LP shares. Stage 4 generalizes this
-    ///      to additional providers on an already-funded (possibly unbalanced) pool.
+    /// @notice Add liquidity to the market and receive LP shares.
+    /// @dev First funding (empty pool) seeds a 50/50 price. Subsequent funding adds at the
+    ///      CURRENT price (Gnosis FPMM addFunding): shares are minted against the larger
+    ///      reserve, each reserve grows proportionally so the price is preserved, and the
+    ///      surplus of the smaller (pricier) side is returned to the LP as outcome tokens.
     /// @param amount collateral to deposit as liquidity
     function addLiquidity(uint256 amount) external nonReentrant whenOpen {
         if (amount == 0) revert PredictionMarket__ZeroAmount();
-        if (totalShares != 0) revert PredictionMarket__AlreadyFunded();
 
-        // ---- Effects ----
-        // Equal reserves ⇒ priceYes = priceNo = 0.50. Each reserve token is backed 1:1 by
-        // the collateral we are about to pull in (so `amount` collateral backs `amount` sets).
-        reserveYes = amount;
-        reserveNo = amount;
-        // Define the unit: 1 LP share == 1 unit of initial depth, so shares == amount here.
-        totalShares = amount;
-        sharesOf[msg.sender] = amount;
+        uint256 sharesMinted;
+        if (totalShares == 0) {
+            // ---- First funding: seed a balanced 50/50 pool ----
+            // `amount` collateral backs `amount` of each reserve (a full set per unit).
+            reserveYes = amount;
+            reserveNo = amount;
+            sharesMinted = amount; // unit definition: 1 share == 1 unit of initial depth
+        } else {
+            // ---- Subsequent funding: add at the current price, preserving it ----
+            // poolWeight is the LARGER reserve (the cheaper outcome). It is the binding
+            // constraint on how much real depth this deposit adds.
+            uint256 poolWeight = _max(reserveYes, reserveNo);
+
+            // Shares scale with how much we grow that binding reserve. Round DOWN (pool's favor).
+            sharesMinted = amount * totalShares / poolWeight;
+
+            // Keep each side proportional to current reserves (ratio, hence price, unchanged).
+            uint256 keepYes = amount * reserveYes / poolWeight;
+            uint256 keepNo = amount * reserveNo / poolWeight;
+            reserveYes += keepYes;
+            reserveNo += keepNo;
+
+            // The deposit minted `amount` of each outcome; whatever the pool didn't keep on
+            // the smaller (pricier) side is surplus returned to the LP as an outcome position.
+            yesBalanceOf[msg.sender] += amount - keepYes;
+            noBalanceOf[msg.sender] += amount - keepNo;
+        }
+
+        totalShares += sharesMinted;
+        sharesOf[msg.sender] += sharesMinted;
+        // Credit the new shares' fee baseline so they cannot claim fees that accrued earlier.
+        feeDebt[msg.sender] += sharesMinted * accFeePerShare / WAD;
 
         // ---- Interaction ----
         collateral.safeTransferFrom(msg.sender, address(this), amount);
-        emit LiquidityAdded(msg.sender, amount, amount);
+        emit LiquidityAdded(msg.sender, amount, sharesMinted);
+    }
+
+    /// @notice Burn LP shares to withdraw a proportional slice of the pool.
+    /// @dev Returns proportional reserves (as outcome tokens) + proportional accrued fees.
+    ///      Complete sets within the withdrawn reserves are merged straight to collateral; any
+    ///      one-sided remainder stays as the LP's residual outcome position (directional risk).
+    ///      Allowed in any phase, so an LP can exit before or after resolution.
+    /// @param sharesToBurn number of LP shares to redeem
+    function removeLiquidity(uint256 sharesToBurn) external nonReentrant {
+        if (sharesToBurn == 0) revert PredictionMarket__ZeroAmount();
+        if (sharesToBurn > sharesOf[msg.sender]) revert PredictionMarket__InsufficientShares();
+
+        // This LP's proportional slice of each pool component. Round DOWN (pool's favor).
+        uint256 sendYes = reserveYes * sharesToBurn / totalShares;
+        uint256 sendNo = reserveNo * sharesToBurn / totalShares;
+        // Fees the caller has earned = (gross entitlement of all their shares) - (their fee debt).
+        // This harvests ALL of the caller's accrued fees, independent of how many shares they burn,
+        // and is exactly 0 for shares that were minted after the last fee accrued (the JIT fix).
+        uint256 feeShare = sharesOf[msg.sender] * accFeePerShare / WAD - feeDebt[msg.sender];
+
+        // Complete sets among the withdrawn reserves merge 1:1 back into collateral.
+        uint256 mergeable = _min(sendYes, sendNo);
+
+        // ---- Effects ----
+        reserveYes -= sendYes;
+        reserveNo -= sendNo;
+        collectedFees -= feeShare;
+        sharesOf[msg.sender] -= sharesToBurn;
+        totalShares -= sharesToBurn;
+        // We just paid out all pending fees, so reset the debt to the remaining shares' entitlement.
+        feeDebt[msg.sender] = sharesOf[msg.sender] * accFeePerShare / WAD;
+
+        // Leftover (one-sided) outcome tokens become the LP's residual position.
+        uint256 yesOut = sendYes - mergeable;
+        uint256 noOut = sendNo - mergeable;
+        yesBalanceOf[msg.sender] += yesOut;
+        noBalanceOf[msg.sender] += noOut;
+
+        // Collateral paid = merged complete sets + the LP's share of fees.
+        uint256 collateralOut = mergeable + feeShare;
+
+        // ---- Interaction ----
+        collateral.safeTransfer(msg.sender, collateralOut);
+        emit LiquidityRemoved(msg.sender, sharesToBurn, collateralOut, yesOut, noOut);
     }
 
     /// @notice Current YES price, scaled by WAD (e.g. 0.80 is returned as 8e17).
@@ -329,6 +437,10 @@ contract PredictionMarket is ReentrancyGuard {
 
         // Net investment that actually enters the curve; the rest (the fee) stays as collateral.
         uint256 x = investmentAmount * (FEE_DENOM - feeBps) / FEE_DENOM;
+        uint256 fee = investmentAmount - x;
+        collectedFees += fee; // retain the fee for LPs
+        // Distribute this fee across the LP shares that exist right now (totalShares > 0 here).
+        accFeePerShare += fee * WAD / totalShares;
 
         // ---- Effects: move along the curve ----
         // The bought side's reserve shrinks (we pay it out); the other side's reserve grows by x.
@@ -365,6 +477,10 @@ contract PredictionMarket is ReentrancyGuard {
 
         // Grossed-up amount the curve/merge sees; (R - returnAmount) is the retained fee.
         uint256 R = _ceilDiv(returnAmount * FEE_DENOM, FEE_DENOM - feeBps);
+        uint256 fee = R - returnAmount;
+        collectedFees += fee; // retain the fee for LPs
+        // Distribute this fee across the LP shares that exist right now (totalShares > 0 here).
+        accFeePerShare += fee * WAD / totalShares;
 
         // ---- Effects ----
         // The seller's tokens flow into the sold side's reserve; then the pool merges R complete
@@ -387,6 +503,75 @@ contract PredictionMarket is ReentrancyGuard {
     }
 
     // ----------------------------------------------------------------------------------
+    // Stage 5: resolution + redemption (settling the market)
+    // ----------------------------------------------------------------------------------
+
+    /// @notice Declare the winning outcome. Callable ONCE, only by the resolver, only after
+    ///         closeTime. After this, trading is already blocked (whenOpen) and redemption opens.
+    /// @dev Mirrors the Gnosis CentralizedOracle "owner sets the answer once" discipline. The
+    ///      resolver is a trusted multisig+timelock in production. PRODUCTION HARDENING (flagged,
+    ///      not built yet): a finalization/dispute delay between resolve() and the first redeem()
+    ///      so a wrong answer can be challenged before money moves.
+    ///
+    ///      No `nonReentrant` here on purpose: this function makes NO external call (no token
+    ///      transfer), so there is no callback an attacker could reenter through. The guard would
+    ///      only burn gas. (redeem(), which DOES move collateral, keeps the guard.)
+    /// @param outcome the winning side — must be Yes or No, never the Unset sentinel
+    function resolve(Outcome outcome) external {
+        // --- Access control: only the trusted resolver may settle the market. ---
+        if (msg.sender != resolver) revert PredictionMarket__NotResolver();
+
+        // --- Timing: cannot settle a question whose trading window is still open. We resolve
+        //     strictly AT or AFTER closeTime. (whenOpen blocks trading at `>= closeTime`, so the
+        //     two windows meet exactly at closeTime with no gap and no overlap.) ---
+        if (block.timestamp < closeTime) revert PredictionMarket__NotClosed();
+
+        // --- Idempotency: the winner is final. `Unset` is our "not yet resolved" sentinel, so
+        //     anything other than Unset means we've already resolved once. ---
+        if (winningOutcome != Outcome.Unset) revert PredictionMarket__AlreadyResolved();
+
+        // --- Validity: the answer must be a real outcome. Allowing Unset would "resolve" the
+        //     market while leaving it logically unresolved — a trap. ---
+        if (outcome != Outcome.Yes && outcome != Outcome.No) revert PredictionMarket__InvalidOutcome();
+
+        // --- Effect: record the winner. From now on winningOutcome != Unset gates redeem(). ---
+        winningOutcome = outcome;
+        emit Resolved(outcome);
+    }
+
+    /// @notice After resolution, burn your WINNING outcome tokens for an equal amount of
+    ///         collateral (1:1). Losing tokens are worth nothing and are simply ignored.
+    /// @dev Why 1:1 is always solvent: every outcome token in existence was minted as part of a
+    ///      full set (split / buy / sell / liquidity all keep totalYES == totalNO == S), and the
+    ///      contract holds S + collectedFees collateral. Only the winning side (exactly S tokens)
+    ///      can ever be redeemed, and S <= the collateral on hand — so the pool can always pay
+    ///      every winner in full, with the fee buffer left over for LPs.
+    function redeem() external nonReentrant {
+        // --- Gate: redemption only exists after the resolver has picked a winner. ---
+        if (winningOutcome == Outcome.Unset) revert PredictionMarket__NotResolved();
+
+        // --- Read the caller's balance on the WINNING side and zero it (Effects before the
+        //     transfer = CEI). We pay out exactly what we burn, so backing stays exact. ---
+        uint256 amount;
+        if (winningOutcome == Outcome.Yes) {
+            amount = yesBalanceOf[msg.sender];
+            if (amount == 0) revert PredictionMarket__NothingToRedeem();
+            yesBalanceOf[msg.sender] = 0;
+        } else {
+            amount = noBalanceOf[msg.sender];
+            if (amount == 0) revert PredictionMarket__NothingToRedeem();
+            noBalanceOf[msg.sender] = 0;
+        }
+
+        // Note: we deliberately leave the caller's LOSING balance untouched. It is unbacked and
+        // worth 0, so it can never be redeemed; clearing it would only waste gas.
+
+        // --- Interaction: release the collateral last. ---
+        collateral.safeTransfer(msg.sender, amount);
+        emit Redeemed(msg.sender, winningOutcome, amount);
+    }
+
+    // ----------------------------------------------------------------------------------
     // Internal helpers
     // ----------------------------------------------------------------------------------
 
@@ -403,5 +588,15 @@ contract PredictionMarket is ReentrancyGuard {
     ///      our bounded reserves; Stage 6 fuzzing bounds inputs to keep rThis*rOther in range.
     function _ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
         return (a + b - 1) / b;
+    }
+
+    /// @dev Larger of two values.
+    function _max(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a >= b ? a : b;
+    }
+
+    /// @dev Smaller of two values.
+    function _min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a <= b ? a : b;
     }
 }
