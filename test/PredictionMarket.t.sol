@@ -418,4 +418,106 @@ contract PredictionMarketTest is Test {
         assertGe(held, totalYes, "collateral backs all YES");
         assertGe(held, totalNo, "collateral backs all NO");
     }
+
+    // ==============================================================================
+    // Stage 3: fees
+    // The fee MATH was built in Stage 2; here we prove the 2% fee (`market`, feeBps=200)
+    // is actually retained as collateral and makes round-tripping lossy. LPs CLAIMING
+    // those fees arrives with removeLiquidity in Stage 4.
+    // ==============================================================================
+
+    /// @dev Give `who` collateral and a max approval on the fee-charging `market`.
+    function _seedFeeMarket(address who) internal {
+        collateral.mint(who, 1_000_000);
+        vm.prank(who);
+        collateral.approve(address(market), type(uint256).max);
+    }
+
+    /// @notice After a buy on a 2% market, exactly the fee stays behind as bare collateral.
+    function test_Fee_BuyRetainsTwoPercent() public {
+        _banner("test_Fee_BuyRetainsTwoPercent");
+        _seedFeeMarket(alice);
+        _seedFeeMarket(bob);
+
+        vm.prank(alice);
+        market.addLiquidity(1000); // rY = rN = 1000
+        console2.log("alice funded fee-market 1000/1000");
+
+        // x = 1000 * (10000-200)/10000 = 980 enters the curve; 20 is the fee.
+        vm.prank(bob);
+        market.buy(PredictionMarket.Outcome.Yes, 1000, 0);
+        _logMarket("after bob buys YES w/ 1000 (fee 2%)", market);
+        _logActor("bob", bob, market);
+
+        uint256 held = collateral.balanceOf(address(market));
+        uint256 totalYes = market.reserveYes() + market.yesBalanceOf(bob);
+        uint256 totalNo = market.reserveNo() + market.noBalanceOf(bob);
+        console2.log("collateral held :", held);
+        console2.log("total YES       :", totalYes);
+        console2.log("total NO        :", totalNo);
+        console2.log("fee buffer (held - totalNO):", held - totalNo);
+
+        // The fee buffer = collateral that is NOT backing any outcome token = the 2% fee.
+        assertEq(held - totalNo, 20, "fee buffer == 2% of 1000");
+        assertEq(held - totalYes, 20, "fee buffer the same vs YES side");
+    }
+
+    /// @notice A fee buyer receives fewer shares than they would on a fee-free market.
+    function test_Fee_GivesFewerSharesThanZeroFee() public {
+        _banner("test_Fee_GivesFewerSharesThanZeroFee");
+        // Fee market funded 1000/1000:
+        _seedFeeMarket(alice);
+        vm.prank(alice);
+        market.addLiquidity(1000);
+
+        // Fee-free market funded identically:
+        _setUpNoFeeMarket();
+        vm.prank(alice);
+        mkt.addLiquidity(1000);
+
+        uint256 qFee = market.calcBuyAmount(PredictionMarket.Outcome.Yes, 1000);
+        uint256 qFree = mkt.calcBuyAmount(PredictionMarket.Outcome.Yes, 1000);
+        console2.log("shares for 1000 @2% fee  :", qFee);
+        console2.log("shares for 1000 @0% fee  :", qFree);
+        assertEq(qFree, 1500, "0% fee: 1500 (from Stage 2)");
+        assertEq(qFee, 1474, "2% fee: fewer shares");
+        assertLt(qFee, qFree, "fee buyer always gets fewer shares");
+    }
+
+    /// @notice With a fee, you cannot round-trip your money back: reclaiming the full
+    ///         investment would cost MORE shares than the buy ever gave you.
+    function test_Fee_RoundTripIsLossy() public {
+        _banner("test_Fee_RoundTripIsLossy");
+        _seedFeeMarket(alice);
+        _seedFeeMarket(bob);
+        vm.prank(alice);
+        market.addLiquidity(1000);
+
+        vm.prank(bob);
+        market.buy(PredictionMarket.Outcome.Yes, 1000, 0);
+        uint256 received = market.yesBalanceOf(bob);
+        console2.log("bob received YES:", received);
+
+        // How many YES would bob need to return to get his full 1000 back?
+        uint256 needed = market.calcSellAmount(PredictionMarket.Outcome.Yes, 1000);
+        console2.log("YES needed to reclaim 1000:", needed);
+        console2.log("=> needed > received, so the fee makes it lossy");
+        assertGt(needed, received, "fee makes a full round-trip impossible");
+    }
+
+    /// @notice The fee buffer keeps the market strictly OVER-collateralized (extra safety).
+    function test_Fee_LeavesPositiveBuffer() public {
+        _banner("test_Fee_LeavesPositiveBuffer");
+        _seedFeeMarket(alice);
+        _seedFeeMarket(bob);
+        vm.prank(alice);
+        market.addLiquidity(1000);
+        vm.prank(bob);
+        market.buy(PredictionMarket.Outcome.Yes, 1000, 0);
+
+        uint256 held = collateral.balanceOf(address(market));
+        uint256 totalYes = market.reserveYes() + market.yesBalanceOf(bob);
+        console2.log("held:", held, " totalYES:", totalYes);
+        assertGt(held, totalYes, "fee buffer makes held strictly > obligations");
+    }
 }
