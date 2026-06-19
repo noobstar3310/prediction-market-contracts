@@ -50,6 +50,11 @@ contract PredictionMarket is ReentrancyGuard {
     /// @notice Basis-points denominator. 10_000 bps = 100%, so feeBps=200 means 2%.
     uint16 public constant FEE_DENOM = 10_000;
 
+    /// @notice Fixed-point scale (1e18) used to express prices as integers, since Solidity
+    ///         has no decimals. A price of 0.80 is returned as 0.80 * WAD = 8e17. This scale
+    ///         is independent of the collateral's own decimals (a price is a pure ratio).
+    uint256 public constant WAD = 1e18;
+
     /// @notice The ERC20 used as collateral / settlement currency (e.g. mock USDC).
     IERC20 public immutable collateral;
 
@@ -96,6 +101,17 @@ contract PredictionMarket is ReentrancyGuard {
     /// @notice Emitted when `account` merges `amount` YES + NO back into `amount` collateral.
     event Merge(address indexed account, uint256 amount);
 
+    /// @notice Emitted when `provider` adds `amount` collateral of liquidity and is minted `shares`.
+    event LiquidityAdded(address indexed provider, uint256 amount, uint256 shares);
+
+    /// @notice Emitted on a buy: `buyer` spent `investmentAmount` collateral for `sharesOut`
+    ///         tokens of `outcome`.
+    event Buy(address indexed buyer, Outcome outcome, uint256 investmentAmount, uint256 sharesOut);
+
+    /// @notice Emitted on a sell: `seller` returned `sharesIn` tokens of `outcome` for
+    ///         `returnAmount` collateral.
+    event Sell(address indexed seller, Outcome outcome, uint256 returnAmount, uint256 sharesIn);
+
     // ----------------------------------------------------------------------------------
     // Errors
     // ----------------------------------------------------------------------------------
@@ -117,6 +133,18 @@ contract PredictionMarket is ReentrancyGuard {
     error PredictionMarket__InsufficientYes();
     /// @notice Caller does not own enough NO tokens for this operation.
     error PredictionMarket__InsufficientNo();
+    /// @notice Operation requires a funded pool, but no liquidity has been added yet.
+    error PredictionMarket__PoolNotFunded();
+    /// @notice First funding already happened; multi-LP funding arrives in Stage 4.
+    error PredictionMarket__AlreadyFunded();
+    /// @notice Outcome argument must be Yes or No (not the Unset sentinel).
+    error PredictionMarket__InvalidOutcome();
+    /// @notice Trading is no longer allowed because the market has reached closeTime.
+    error PredictionMarket__TradingClosed();
+    /// @notice The trade's result was worse than the caller's slippage limit.
+    error PredictionMarket__SlippageExceeded();
+    /// @notice Requested collateral-out on a sell is too large for the pool to honor.
+    error PredictionMarket__ReturnTooHigh();
 
     // ----------------------------------------------------------------------------------
     // Constructor
@@ -185,5 +213,195 @@ contract PredictionMarket is ReentrancyGuard {
         collateral.safeTransfer(msg.sender, amount);
 
         emit Merge(msg.sender, amount);
+    }
+
+    // ----------------------------------------------------------------------------------
+    // Modifiers
+    // ----------------------------------------------------------------------------------
+
+    /// @notice Restrict a function to the trading window (before closeTime).
+    /// @dev A modifier wraps the function body; `_;` is where the body runs. If the check
+    ///      fails we revert and the body never executes.
+    modifier whenOpen() {
+        if (block.timestamp >= closeTime) revert PredictionMarket__TradingClosed();
+        _;
+    }
+
+    // ----------------------------------------------------------------------------------
+    // Stage 2: liquidity (first funding), pricing, and buy/sell (the CPMM core)
+    // ----------------------------------------------------------------------------------
+
+    /// @notice Seed the market with initial liquidity at a 50/50 price.
+    /// @dev Stage 2 only supports the FIRST funding (empty pool). The `amount` collateral is
+    ///      split into `amount` YES + `amount` NO, both kept as equal reserves (so price is
+    ///      0.50 each), and the funder is minted `amount` LP shares. Stage 4 generalizes this
+    ///      to additional providers on an already-funded (possibly unbalanced) pool.
+    /// @param amount collateral to deposit as liquidity
+    function addLiquidity(uint256 amount) external nonReentrant whenOpen {
+        if (amount == 0) revert PredictionMarket__ZeroAmount();
+        if (totalShares != 0) revert PredictionMarket__AlreadyFunded();
+
+        // ---- Effects ----
+        // Equal reserves ⇒ priceYes = priceNo = 0.50. Each reserve token is backed 1:1 by
+        // the collateral we are about to pull in (so `amount` collateral backs `amount` sets).
+        reserveYes = amount;
+        reserveNo = amount;
+        // Define the unit: 1 LP share == 1 unit of initial depth, so shares == amount here.
+        totalShares = amount;
+        sharesOf[msg.sender] = amount;
+
+        // ---- Interaction ----
+        collateral.safeTransferFrom(msg.sender, address(this), amount);
+        emit LiquidityAdded(msg.sender, amount, amount);
+    }
+
+    /// @notice Current YES price, scaled by WAD (e.g. 0.80 is returned as 8e17).
+    /// @dev price(YES) = reserveNo / (reserveYes + reserveNo). The scarcer reserve (YES) maps
+    ///      to the higher price. Multiply by WAD BEFORE dividing so we don't truncate to 0.
+    function priceYes() external view returns (uint256) {
+        if (totalShares == 0) revert PredictionMarket__PoolNotFunded();
+        return reserveNo * WAD / (reserveYes + reserveNo);
+    }
+
+    /// @notice Current NO price, scaled by WAD. priceYes + priceNo == WAD (they sum to 1).
+    function priceNo() external view returns (uint256) {
+        if (totalShares == 0) revert PredictionMarket__PoolNotFunded();
+        return reserveYes * WAD / (reserveYes + reserveNo);
+    }
+
+    /// @notice How many `outcome` tokens a buyer receives for `investmentAmount` collateral.
+    /// @dev Constant-product math. Let x be the investment after fees. Buying `outcome` adds x
+    ///      to the OTHER reserve and pays out from THIS reserve so that k = rThis*rOther holds:
+    ///        sharesOut = (rThis + x) - (rThis*rOther)/(rOther + x)
+    ///      We ceil-divide the subtracted term so sharesOut rounds DOWN (in the pool's favor).
+    /// @param outcome Yes or No — the side being bought
+    /// @param investmentAmount gross collateral the buyer will pay (fee is taken from this)
+    /// @return sharesOut outcome tokens credited to the buyer
+    function calcBuyAmount(Outcome outcome, uint256 investmentAmount) public view returns (uint256) {
+        if (totalShares == 0) revert PredictionMarket__PoolNotFunded();
+        (uint256 rThis, uint256 rOther) = _reserves(outcome);
+
+        // Net investment after the trading fee. Integer division rounds the fee UP slightly
+        // (x rounds down), which keeps value in the pool — the fee stays as bare collateral.
+        uint256 x = investmentAmount * (FEE_DENOM - feeBps) / FEE_DENOM;
+
+        // sharesOut = (rThis + x) - ceil( rThis*rOther / (rOther + x) )
+        uint256 sharesOut = (rThis + x) - _ceilDiv(rThis * rOther, rOther + x);
+        return sharesOut;
+    }
+
+    /// @notice How many `outcome` tokens a seller must return to receive `returnAmount` collateral.
+    /// @dev Gnosis closed form (no sqrt). Gross the desired return up by the fee, require it to
+    ///      be payable from the OTHER reserve, then:
+    ///        sharesIn = R + (rThis*rOther)/(rOther - R) - rThis,   R = returnAmount grossed-up
+    ///      Ceil-divide so sharesIn rounds UP (the seller pays at least enough — pool's favor).
+    /// @param outcome Yes or No — the side being sold
+    /// @param returnAmount net collateral the seller wants to receive
+    /// @return sharesIn outcome tokens the seller must hand in
+    function calcSellAmount(Outcome outcome, uint256 returnAmount) public view returns (uint256) {
+        if (totalShares == 0) revert PredictionMarket__PoolNotFunded();
+        (uint256 rThis, uint256 rOther) = _reserves(outcome);
+
+        // Gross up: the pool's curve sees returnAmount/(1 - fee); the fee is retained on sell.
+        uint256 R = _ceilDiv(returnAmount * FEE_DENOM, FEE_DENOM - feeBps);
+        // The pool must be able to pull R out of the opposite reserve; else it can't pay.
+        if (R >= rOther) revert PredictionMarket__ReturnTooHigh();
+
+        uint256 sharesIn = R + _ceilDiv(rThis * rOther, rOther - R) - rThis;
+        return sharesIn;
+    }
+
+    /// @notice Buy `outcome` tokens with collateral, reverting if you'd get fewer than `minSharesOut`.
+    /// @param outcome Yes or No
+    /// @param investmentAmount gross collateral to spend (includes the fee)
+    /// @param minSharesOut slippage guard — minimum acceptable tokens out
+    function buy(Outcome outcome, uint256 investmentAmount, uint256 minSharesOut)
+        external
+        nonReentrant
+        whenOpen
+    {
+        if (investmentAmount == 0) revert PredictionMarket__ZeroAmount();
+        if (outcome != Outcome.Yes && outcome != Outcome.No) revert PredictionMarket__InvalidOutcome();
+        if (totalShares == 0) revert PredictionMarket__PoolNotFunded();
+
+        uint256 sharesOut = calcBuyAmount(outcome, investmentAmount);
+        if (sharesOut < minSharesOut) revert PredictionMarket__SlippageExceeded();
+
+        // Net investment that actually enters the curve; the rest (the fee) stays as collateral.
+        uint256 x = investmentAmount * (FEE_DENOM - feeBps) / FEE_DENOM;
+
+        // ---- Effects: move along the curve ----
+        // The bought side's reserve shrinks (we pay it out); the other side's reserve grows by x.
+        if (outcome == Outcome.Yes) {
+            reserveYes = reserveYes + x - sharesOut; // == k / (reserveNo + x)
+            reserveNo = reserveNo + x;
+            yesBalanceOf[msg.sender] += sharesOut;
+        } else {
+            reserveNo = reserveNo + x - sharesOut;
+            reserveYes = reserveYes + x;
+            noBalanceOf[msg.sender] += sharesOut;
+        }
+
+        // ---- Interaction: pull the FULL investment (fee included) ----
+        collateral.safeTransferFrom(msg.sender, address(this), investmentAmount);
+        emit Buy(msg.sender, outcome, investmentAmount, sharesOut);
+    }
+
+    /// @notice Sell `outcome` tokens for collateral, reverting if it would cost more than `maxSharesIn`.
+    /// @param outcome Yes or No
+    /// @param returnAmount net collateral you want to receive
+    /// @param maxSharesIn slippage guard — maximum tokens you're willing to hand in
+    function sell(Outcome outcome, uint256 returnAmount, uint256 maxSharesIn)
+        external
+        nonReentrant
+        whenOpen
+    {
+        if (returnAmount == 0) revert PredictionMarket__ZeroAmount();
+        if (outcome != Outcome.Yes && outcome != Outcome.No) revert PredictionMarket__InvalidOutcome();
+        if (totalShares == 0) revert PredictionMarket__PoolNotFunded();
+
+        uint256 sharesIn = calcSellAmount(outcome, returnAmount);
+        if (sharesIn > maxSharesIn) revert PredictionMarket__SlippageExceeded();
+
+        // Grossed-up amount the curve/merge sees; (R - returnAmount) is the retained fee.
+        uint256 R = _ceilDiv(returnAmount * FEE_DENOM, FEE_DENOM - feeBps);
+
+        // ---- Effects ----
+        // The seller's tokens flow into the sold side's reserve; then the pool merges R complete
+        // sets out of both reserves to source the collateral it pays.
+        if (outcome == Outcome.Yes) {
+            if (yesBalanceOf[msg.sender] < sharesIn) revert PredictionMarket__InsufficientYes();
+            yesBalanceOf[msg.sender] -= sharesIn;
+            reserveYes = reserveYes + sharesIn - R; // == k / (reserveNo - R)
+            reserveNo = reserveNo - R;
+        } else {
+            if (noBalanceOf[msg.sender] < sharesIn) revert PredictionMarket__InsufficientNo();
+            noBalanceOf[msg.sender] -= sharesIn;
+            reserveNo = reserveNo + sharesIn - R;
+            reserveYes = reserveYes - R;
+        }
+
+        // ---- Interaction: pay the NET return (fee stays in the contract) ----
+        collateral.safeTransfer(msg.sender, returnAmount);
+        emit Sell(msg.sender, outcome, returnAmount, sharesIn);
+    }
+
+    // ----------------------------------------------------------------------------------
+    // Internal helpers
+    // ----------------------------------------------------------------------------------
+
+    /// @dev Returns (reserve of `outcome`, reserve of the opposite outcome). Lets buy/sell math
+    ///      be written once in terms of (rThis, rOther) instead of duplicating YES/NO branches.
+    function _reserves(Outcome outcome) internal view returns (uint256 rThis, uint256 rOther) {
+        if (outcome == Outcome.Yes) return (reserveYes, reserveNo);
+        if (outcome == Outcome.No) return (reserveNo, reserveYes);
+        revert PredictionMarket__InvalidOutcome();
+    }
+
+    /// @dev Ceiling division: smallest integer >= a/b. Used to round trade math in the pool's
+    ///      favor. Requires b > 0 (our callers guarantee it). a + b - 1 cannot overflow for
+    ///      our bounded reserves; Stage 6 fuzzing bounds inputs to keep rThis*rOther in range.
+    function _ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+        return (a + b - 1) / b;
     }
 }
