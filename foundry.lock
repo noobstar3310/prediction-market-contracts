@@ -1,4 +1,7 @@
 {
+  ".claude/skills/pashov-skills": {
+    "rev": "c9ce8cf7300385eb0f02e15b3749059e4e8f6ec5"
+  },
   "lib/forge-std": {
     "tag": {
       "name": "v1.16.1",

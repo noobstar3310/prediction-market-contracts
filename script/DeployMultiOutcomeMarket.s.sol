@@ -25,6 +25,11 @@ contract DeployMultiOutcomeMarket is Script {
         // `vm.envOr` returns the default when the env var isn't set, so this never reverts.
         uint256 outcomeSlots = vm.envOr("OUTCOME_SLOTS", uint256(3));
 
+        // Collateral policy (the "one standard mUSD" pattern): if COLLATERAL_ADDRESS is set we REUSE
+        // that existing token so every deploy shares a single collateral contract; only when unset do
+        // we deploy a fresh mock. Read before the broadcast — it's a cheat-code read, not a tx.
+        address existing = vm.envOr("COLLATERAL_ADDRESS", address(0));
+
         console2.log("");
         console2.log("=========== DEPLOY: MultiOutcomeMarket ===========");
         console2.log("Broadcaster (deployer):", msg.sender);
@@ -37,10 +42,15 @@ contract DeployMultiOutcomeMarket is Script {
         // signed by the broadcaster (the --private-key), not a simulated test call.
         vm.startBroadcast();
 
-        // 1. Deploy fake collateral and mint a million units to the deployer to play with.
-        console2.log("[1/4] Deploying MockERC20 collateral + minting 1,000,000e18 to deployer...");
-        collateral = new MockERC20("Mock USD", "mUSD");
-        collateral.mint(msg.sender, 1_000_000e18);
+        // 1. Collateral: reuse the standard token if given, else deploy a fresh mock + mint play money.
+        if (existing == address(0)) {
+            console2.log("[1/4] No COLLATERAL_ADDRESS set -> deploying fresh MockERC20 + minting 1,000,000e18...");
+            collateral = new MockERC20("Mock USD", "mUSD");
+            collateral.mint(msg.sender, 1_000_000e18);
+        } else {
+            console2.log("[1/4] Reusing existing collateral at:", existing);
+            collateral = MockERC20(existing);
+        }
 
         // 2. Deploy the market: deployer is the resolver, closes in 7 days, 2% fee, N slots.
         console2.log("[2/4] Deploying MultiOutcomeMarket (resolver=deployer, fee=200bps)...");
