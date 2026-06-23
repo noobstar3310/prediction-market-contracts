@@ -25,7 +25,7 @@ contract MultiOutcomeMarketTest is Test {
     uint256 internal constant WAD = 1e18;
 
     function setUp() public {
-        collateral = new MockERC20("Mock USD", "mUSD");
+        collateral = new MockERC20("Mock USDT", "mUSDT");
         closeTime = block.timestamp + 7 days;
     }
 

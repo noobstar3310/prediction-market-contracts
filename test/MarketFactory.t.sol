@@ -19,7 +19,7 @@ contract MarketFactoryTest is Test {
 
     function setUp() public {
         factory = new MarketFactory();
-        collateral = new MockERC20("Mock USD", "mUSD");
+        collateral = new MockERC20("Mock USDT", "mUSDT");
         closeTime = block.timestamp + 7 days;
     }
 
