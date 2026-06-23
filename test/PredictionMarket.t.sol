@@ -27,7 +27,7 @@ contract PredictionMarketTest is Test {
     function setUp() public {
         console2.log("");
         console2.log("################## setUp ##################");
-        collateral = new MockERC20("Mock USD", "mUSD");
+        collateral = new MockERC20("Mock USDT", "mUSDT");
         console2.log("Deployed MockERC20 collateral at:", address(collateral));
 
         // closeTime must be in the future relative to the test's current block timestamp.

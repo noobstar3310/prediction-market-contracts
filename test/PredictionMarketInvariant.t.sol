@@ -141,7 +141,7 @@ contract PredictionMarketInvariantTest is StdInvariant, Test {
     uint256 internal closeTime;
 
     function setUp() public {
-        collateral = new MockERC20("Mock USD", "mUSD");
+        collateral = new MockERC20("Mock USDT", "mUSDT");
         closeTime = block.timestamp + 7 days;
         market = new PredictionMarket(collateral, resolver, closeTime, 200); // 2% fee
         handler = new Handler(market, collateral, closeTime, resolver);
