@@ -69,7 +69,7 @@ contract DeployMultiOutcomeMarket is Script {
         // Final summary — copy these addresses for your `cast` commands.
         console2.log("--------------------------------------------------");
         console2.log("DONE. Deployed addresses:");
-        console2.log("  Collateral (mUSDT)   :", address(collateral));
+        console2.log("  Collateral (mUSD)   :", address(collateral));
         console2.log("  MultiOutcomeMarket  :", address(market));
         console2.log("  Deployer/resolver   :", msg.sender);
         console2.log("State checks:");
