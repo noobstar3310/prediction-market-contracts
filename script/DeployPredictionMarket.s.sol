@@ -15,7 +15,7 @@ contract DeployPredictionMarket is Script {
     function run() external returns (MockERC20 collateral, PredictionMarket market) {
         uint256 closeTime = block.timestamp + 7 days;
 
-        // Collateral policy (the "one standard mUSD" pattern): if COLLATERAL_ADDRESS is set we REUSE
+        // Collateral policy (the "one standard mUSDT" pattern): if COLLATERAL_ADDRESS is set we REUSE
         // that existing token so every deploy shares a single collateral contract; only when unset do
         // we deploy a fresh mock. Read before the broadcast — it's a cheat-code read, not a tx.
         address existing = vm.envOr("COLLATERAL_ADDRESS", address(0));
@@ -34,7 +34,7 @@ contract DeployPredictionMarket is Script {
         // 1. Collateral: reuse the standard token if given, else deploy a fresh mock + mint play money.
         if (existing == address(0)) {
             console2.log("[1/3] No COLLATERAL_ADDRESS set -> deploying fresh MockERC20 + minting 1,000,000e18...");
-            collateral = new MockERC20("Mock USD", "mUSD");
+            collateral = new MockERC20("Mock USDT", "mUSDT");
             collateral.mint(msg.sender, 1_000_000e18);
         } else {
             console2.log("[1/3] Reusing existing collateral at:", existing);
@@ -54,11 +54,11 @@ contract DeployPredictionMarket is Script {
         // Final summary — copy these addresses for your `cast` commands.
         console2.log("--------------------------------------------------");
         console2.log("DONE. Deployed addresses:");
-        console2.log("  Collateral (mUSD):", address(collateral));
+        console2.log("  Collateral (mUSDT):", address(collateral));
         console2.log("  PredictionMarket :", address(market));
         console2.log("  Deployer/resolver:", msg.sender);
         console2.log("State checks:");
-        console2.log("  deployer mUSD balance :", collateral.balanceOf(msg.sender));
+        console2.log("  deployer mUSDT balance :", collateral.balanceOf(msg.sender));
         console2.log("  market feeBps         :", market.feeBps());
         console2.log("  market closeTime      :", market.closeTime());
         console2.log("  pool funded?          : no (call addLiquidity to seed it)");

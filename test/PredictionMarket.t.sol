@@ -27,7 +27,7 @@ contract PredictionMarketTest is Test {
     function setUp() public {
         console2.log("");
         console2.log("################## setUp ##################");
-        collateral = new MockERC20("Mock USD", "mUSD");
+        collateral = new MockERC20("Mock USDT", "mUSDT");
         console2.log("Deployed MockERC20 collateral at:", address(collateral));
 
         // closeTime must be in the future relative to the test's current block timestamp.
@@ -80,7 +80,7 @@ contract PredictionMarketTest is Test {
 
     function test_Mock_MintAndTransfer() public {
         _banner("test_Mock_MintAndTransfer");
-        console2.log("Minting 1,000e18 mUSD to alice...");
+        console2.log("Minting 1,000e18 mUSDT to alice...");
         collateral.mint(alice, 1_000e18);
         console2.log("  alice balance:", collateral.balanceOf(alice));
         assertEq(collateral.balanceOf(alice), 1_000e18, "mint should credit alice");

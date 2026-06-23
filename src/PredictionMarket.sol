@@ -55,7 +55,7 @@ contract PredictionMarket is ReentrancyGuard {
     ///         is independent of the collateral's own decimals (a price is a pure ratio).
     uint256 public constant WAD = 1e18;
 
-    /// @notice The ERC20 used as collateral / settlement currency (e.g. mock USDC).
+    /// @notice The ERC20 used as collateral / settlement currency (e.g. mock USDT).
     IERC20 public immutable collateral;
 
     /// @notice The only address allowed to resolve the market (declare the winner).
