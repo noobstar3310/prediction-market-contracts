@@ -1,35 +1,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
 /// @title Vault
-/// @notice An open shared pool for the TTT token. Anyone can deposit; anyone can
-///         withdraw up to the current pool balance into their own wallet. There is
-///         no per-user accounting and no access control — by design. Security is
-///         explicitly out of scope (see docs/superpowers/specs/2026-06-26-ttt-vault-design.md).
+/// @notice An open shared pool for the chain's native token (ETH). Anyone can deposit;
+///         anyone can withdraw up to the current pool balance into their own wallet.
+///         There is no per-user accounting and no access control — by design.
 contract Vault {
-    IERC20 public immutable token;
-
     event Deposit(address indexed from, uint256 amount);
     event Withdraw(address indexed to, uint256 amount);
 
-    constructor(IERC20 token_) {
-        token = token_;
+    /// @notice Deposit native token into the pool. The value is sent with the call
+    ///         itself (msg.value), so there is no approval step and no token argument.
+    function deposit() external payable {
+        emit Deposit(msg.sender, msg.value);
     }
 
-    /// @notice Pull `amount` of TTT from the caller into the pool. Caller must have
-    ///         approved this contract for at least `amount` first.
-    function deposit(uint256 amount) external {
-        token.transferFrom(msg.sender, address(this), amount);
-        emit Deposit(msg.sender, amount);
-    }
-
-    /// @notice Send `amount` of TTT from the pool to the caller. Reverts if `amount`
-    ///         exceeds the current pool balance (the maximum).
+    /// @notice Send `amount` of native token from the pool to the caller.
+    ///         Reverts if `amount` exceeds the current pool balance.
     function withdraw(uint256 amount) external {
-        require(amount <= token.balanceOf(address(this)), "amount exceeds pool balance");
-        token.transfer(msg.sender, amount);
+        require(amount <= address(this).balance, "amount exceeds pool balance");
+        (bool ok, ) = msg.sender.call{value: amount}("");
+        require(ok, "native transfer failed");
         emit Withdraw(msg.sender, amount);
     }
 }
