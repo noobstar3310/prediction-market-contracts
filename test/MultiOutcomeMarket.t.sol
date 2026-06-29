@@ -48,10 +48,10 @@ contract MultiOutcomeMarketTest is Test {
     /// @dev Independently recompute a holder's expected redemption from the payout vector.
     ///      Mirrors redeem()'s formula so we validate the on-chain math against a clean reimpl.
     function _expectedRedeem(MultiOutcomeMarket m, address who) internal view returns (uint256 exp) {
-        uint256 n = m.outcomeSlotCount();
-        uint256 den = m.payoutDenominator();
+        uint256 n = m.i_outcomeSlotCount();
+        uint256 den = m.s_payoutDenominator();
         for (uint256 i = 0; i < n; i++) {
-            exp += m.balanceOf(i, who) * m.payoutNumerators(i) / den;
+            exp += m.s_balanceOf(i, who) * m.s_payoutNumerators(i) / den;
         }
     }
 
@@ -60,7 +60,7 @@ contract MultiOutcomeMarketTest is Test {
         for (uint256 i = 0; i < r.length; i++) {
             console2.log("   reserve[", i, "]:", r[i]);
         }
-        console2.log("   totalShares:", m.totalShares());
+        console2.log("   totalShares:", m.s_totalShares());
     }
 
     function _banner(string memory name) internal pure {
@@ -75,11 +75,11 @@ contract MultiOutcomeMarketTest is Test {
     function test_Constructor_SetsConfigAndSizesReserves() public {
         _banner("test_Constructor_SetsConfigAndSizesReserves");
         MultiOutcomeMarket m = _deploy(3);
-        assertEq(address(m.collateral()), address(collateral), "collateral set");
-        assertEq(m.resolver(), resolver, "resolver set");
-        assertEq(m.outcomeSlotCount(), 3, "slot count set");
+        assertEq(address(m.i_collateral()), address(collateral), "collateral set");
+        assertEq(m.i_resolver(), resolver, "resolver set");
+        assertEq(m.i_outcomeSlotCount(), 3, "slot count set");
         assertEq(m.getReserves().length, 3, "reserves pre-sized to N");
-        assertEq(m.payoutDenominator(), 0, "starts unresolved");
+        assertEq(m.s_payoutDenominator(), 0, "starts unresolved");
     }
 
     function test_Constructor_RejectsBadOutcomeCount() public {
@@ -105,14 +105,14 @@ contract MultiOutcomeMarketTest is Test {
         m.split(100e18);
         console2.log("After split, alice holds one unit of each outcome:");
         for (uint256 i = 0; i < 3; i++) {
-            assertEq(m.balanceOf(i, alice), 100e18, "split credits each outcome");
+            assertEq(m.s_balanceOf(i, alice), 100e18, "split credits each outcome");
         }
         assertEq(collateral.balanceOf(address(m)), 100e18, "collateral locked 1:1");
 
         vm.prank(alice);
         m.merge(100e18);
         for (uint256 i = 0; i < 3; i++) {
-            assertEq(m.balanceOf(i, alice), 0, "merge burns each outcome");
+            assertEq(m.s_balanceOf(i, alice), 0, "merge burns each outcome");
         }
         assertEq(collateral.balanceOf(alice), 100e18, "alice fully refunded by merge");
     }
@@ -156,7 +156,7 @@ contract MultiOutcomeMarketTest is Test {
 
         vm.prank(alice);
         m.buy(1, 100e18, quoted); // minSharesOut == quote (no slippage in a static test)
-        assertEq(m.balanceOf(1, alice), quoted, "buyer credited the quoted amount");
+        assertEq(m.s_balanceOf(1, alice), quoted, "buyer credited the quoted amount");
 
         uint256 priceAfter = m.marginalPrice(1);
         console2.log("price[1] before:", priceBefore);
@@ -197,7 +197,7 @@ contract MultiOutcomeMarketTest is Test {
         // Valid, then second resolve is rejected.
         vm.prank(resolver);
         m.resolve(payout);
-        assertEq(m.payoutDenominator(), 1, "resolved");
+        assertEq(m.s_payoutDenominator(), 1, "resolved");
         vm.prank(resolver);
         vm.expectRevert(MultiOutcomeMarket.MultiOutcomeMarket__AlreadyResolved.selector);
         m.resolve(payout);
@@ -232,7 +232,7 @@ contract MultiOutcomeMarketTest is Test {
         m.resolve(payout);
 
         // alice (winner) redeems her outcome-1 balance 1:1.
-        uint256 aliceShares = m.balanceOf(1, alice);
+        uint256 aliceShares = m.s_balanceOf(1, alice);
         uint256 expAlice = _expectedRedeem(m, alice);
         assertEq(expAlice, aliceShares, "winner payout == winning balance");
 
@@ -304,8 +304,8 @@ contract MultiOutcomeMarketTest is Test {
         assertEq(exp, 100e18, "full set redeems to stake regardless of split");
 
         // And the fractions are exactly 40% / 60% on each leg.
-        assertEq(m.balanceOf(0, alice) * 20000 / 50000, 40e18, "LOW leg worth 40%");
-        assertEq(m.balanceOf(1, alice) * 30000 / 50000, 60e18, "HIGH leg worth 60%");
+        assertEq(m.s_balanceOf(0, alice) * 20000 / 50000, 40e18, "LOW leg worth 40%");
+        assertEq(m.s_balanceOf(1, alice) * 30000 / 50000, 60e18, "HIGH leg worth 60%");
 
         vm.prank(alice);
         m.redeem();
@@ -344,10 +344,10 @@ contract MultiOutcomeMarketTest is Test {
         // Everyone who can redeem, does. carol exits LP first (turns reserves into tokens + fees).
         // NB: read sharesOf into a local BEFORE prank — a view call between prank and the target
         // call would consume the prank (Foundry only applies it to the very next call).
-        uint256 carolShares = m.sharesOf(carol);
+        uint256 carolShares = m.s_sharesOf(carol);
         vm.prank(carol);
         m.removeLiquidity(carolShares);
-        if (m.balanceOf(1, carol) > 0) {
+        if (m.s_balanceOf(1, carol) > 0) {
             vm.prank(carol);
             m.redeem();
         }

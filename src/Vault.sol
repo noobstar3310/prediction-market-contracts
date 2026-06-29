@@ -19,7 +19,7 @@ contract Vault {
     ///         Reverts if `amount` exceeds the current pool balance.
     function withdraw(uint256 amount) external {
         require(amount <= address(this).balance, "amount exceeds pool balance");
-        (bool ok, ) = msg.sender.call{value: amount}("");
+        (bool ok,) = msg.sender.call{value: amount}("");
         require(ok, "native transfer failed");
         emit Withdraw(msg.sender, amount);
     }

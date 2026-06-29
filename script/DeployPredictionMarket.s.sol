@@ -19,6 +19,9 @@ contract DeployPredictionMarket is Script {
         // that existing token so every deploy shares a single collateral contract; only when unset do
         // we deploy a fresh mock. Read before the broadcast — it's a cheat-code read, not a tx.
         address existing = vm.envOr("COLLATERAL_ADDRESS", address(0));
+        // Fee vault that receives ALL trading fees. Set FEE_VAULT to route somewhere specific;
+        // otherwise it falls back to the deployer as a placeholder (the real vault isn't built yet).
+        address feeVault = vm.envOr("FEE_VAULT", msg.sender);
 
         console2.log("");
         console2.log("============ DEPLOY: PredictionMarket ============");
@@ -41,9 +44,9 @@ contract DeployPredictionMarket is Script {
             collateral = MockERC20(existing);
         }
 
-        // 2. Deploy the market: deployer is the resolver, closes in 7 days, 2% fee.
+        // 2. Deploy the market: deployer is the resolver, closes in 7 days, 2% fee, fees -> feeVault.
         console2.log("[2/3] Deploying PredictionMarket (resolver=deployer, fee=200bps)...");
-        market = new PredictionMarket(collateral, msg.sender, closeTime, 200);
+        market = new PredictionMarket(collateral, msg.sender, closeTime, 200, feeVault);
 
         // 3. Pre-approve the market so you can split/buy without a separate approve tx.
         console2.log("[3/3] Approving market to spend deployer's collateral (max)...");
@@ -57,10 +60,11 @@ contract DeployPredictionMarket is Script {
         console2.log("  Collateral (mUSDT):", address(collateral));
         console2.log("  PredictionMarket :", address(market));
         console2.log("  Deployer/resolver:", msg.sender);
+        console2.log("  Fee vault        :", feeVault);
         console2.log("State checks:");
         console2.log("  deployer mUSDT balance :", collateral.balanceOf(msg.sender));
-        console2.log("  market feeBps         :", market.feeBps());
-        console2.log("  market closeTime      :", market.closeTime());
+        console2.log("  market feeBps         :", market.i_feeBps());
+        console2.log("  market closeTime      :", market.i_closeTime());
         console2.log("  pool funded?          : no (call addLiquidity to seed it)");
         console2.log("==================================================");
     }

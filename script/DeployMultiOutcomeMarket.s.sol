@@ -74,10 +74,10 @@ contract DeployMultiOutcomeMarket is Script {
         console2.log("  Deployer/resolver   :", msg.sender);
         console2.log("State checks:");
         console2.log("  deployer mUSD balance:", collateral.balanceOf(msg.sender));
-        console2.log("  market feeBps        :", market.feeBps());
-        console2.log("  market closeTime     :", market.closeTime());
-        console2.log("  market outcomeSlots  :", market.outcomeSlotCount());
-        console2.log("  market totalShares   :", market.totalShares());
+        console2.log("  market feeBps        :", market.i_feeBps());
+        console2.log("  market closeTime     :", market.i_closeTime());
+        console2.log("  market outcomeSlots  :", market.i_outcomeSlotCount());
+        console2.log("  market totalShares   :", market.s_totalShares());
         console2.log("  pool funded?         : yes (seeded with 10,000e18)");
         console2.log("==================================================");
     }

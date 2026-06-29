@@ -18,6 +18,7 @@ contract SimHighActivity is Test {
 
     address internal lp = makeAddr("LP");
     address internal whale = makeAddr("WHALE");
+    address internal feeVault = makeAddr("feeVault"); // all trading fees route here
     address[] internal traders;
 
     uint256 internal closeTime;
@@ -45,7 +46,7 @@ contract SimHighActivity is Test {
         musdt = new MockERC20("Mock USDT", "mUSDT");
         closeTime = block.timestamp + 30 days;
         // resolver = this test contract, so we can settle at the end.
-        market = new PredictionMarket(musdt, address(this), closeTime, FEE_BPS);
+        market = new PredictionMarket(musdt, address(this), closeTime, FEE_BPS, feeVault);
 
         for (uint256 i; i < 8; i++) {
             address t = makeAddr(string.concat("trader", vm.toString(i)));
@@ -92,7 +93,7 @@ contract SimHighActivity is Test {
         }
         _snap(N_TRADES);
 
-        uint256 feesGenerated = market.collectedFees();
+        uint256 feesGenerated = musdt.balanceOf(feeVault);
         uint256 finalPrice = market.priceYes() / 1e16;
 
         // --- close + resolve: YES wins ---
@@ -106,14 +107,14 @@ contract SimHighActivity is Test {
         // --- settle everyone: pull liquidity, then redeem winning tokens ---
         address[] memory all = _all();
         for (uint256 i; i < all.length; i++) {
-            uint256 s = market.sharesOf(all[i]);
+            uint256 s = market.s_sharesOf(all[i]);
             if (s > 0) {
                 vm.prank(all[i]);
                 try market.removeLiquidity(s) {} catch {}
             }
         }
         for (uint256 i; i < all.length; i++) {
-            if (market.yesBalanceOf(all[i]) > 0) {
+            if (market.s_yesBalanceOf(all[i]) > 0) {
                 vm.prank(all[i]);
                 try market.redeem() {} catch {}
             }
@@ -130,11 +131,9 @@ contract SimHighActivity is Test {
         console2.log(string.concat("  extra LP adds     : ", vm.toString(nLPAdds)));
         console2.log(string.concat("  skipped attempts  : ", vm.toString(nSkipped)));
         console2.log(
-            string.concat(
-                "  total trade volume: ", _usd(totalBuyVolume + totalSellVolume), " mUSDT (buys+sells)"
-            )
+            string.concat("  total trade volume: ", _usd(totalBuyVolume + totalSellVolume), " mUSDT (buys+sells)")
         );
-        console2.log(string.concat("  fees generated    : ", _usd(feesGenerated), " mUSDT (all to LPs)"));
+        console2.log(string.concat("  fees generated    : ", _usd(feesGenerated), " mUSDT (all to vault)"));
 
         console2.log("");
         console2.log("============================ PRICE JOURNEY ===============================");
@@ -145,7 +144,9 @@ contract SimHighActivity is Test {
         console2.log("============================ WHALE POST-MORTEM ===========================");
         console2.log(string.concat("  paid in            : 100,000 mUSDT for ", _usd(whaleShares), " YES shares"));
         console2.log(
-            string.concat("  avg price paid     : ", vm.toString(100_000e18 * 100 / whaleShares), "c per share (cap is 100c!)")
+            string.concat(
+                "  avg price paid     : ", vm.toString(100_000e18 * 100 / whaleShares), "c per share (cap is 100c!)"
+            )
         );
         console2.log(string.concat("  redeemed (YES won) : ", _usd(whaleShares), " mUSDT"));
         _pnl("  whale net P&L     ", whale);
@@ -160,7 +161,9 @@ contract SimHighActivity is Test {
         }
         console2.log(
             string.concat(
-                "  traders combined  : ", traderSum >= 0 ? "+" : "-", _usd(uint256(traderSum >= 0 ? traderSum : -traderSum))
+                "  traders combined  : ",
+                traderSum >= 0 ? "+" : "-",
+                _usd(uint256(traderSum >= 0 ? traderSum : -traderSum))
             )
         );
 
@@ -214,14 +217,14 @@ contract SimHighActivity is Test {
 
     function _doSell() internal {
         address t = traders[_rnd(0, traders.length - 1)];
-        uint256 yb = market.yesBalanceOf(t);
-        uint256 nb = market.noBalanceOf(t);
+        uint256 yb = market.s_yesBalanceOf(t);
+        uint256 nb = market.s_noBalanceOf(t);
         if (yb < 1e18 && nb < 1e18) {
             nSkipped++;
             return;
         }
         bool sellYes = yb >= nb;
-        uint256 rOther = sellYes ? market.reserveNo() : market.reserveYes();
+        uint256 rOther = sellYes ? market.s_reserveNo() : market.s_reserveYes();
         if (rOther < 10e18) {
             nSkipped++;
             return;
@@ -255,7 +258,7 @@ contract SimHighActivity is Test {
 
     function _doMerge() internal {
         address t = traders[_rnd(0, traders.length - 1)];
-        uint256 m = _min(market.yesBalanceOf(t), market.noBalanceOf(t));
+        uint256 m = _min(market.s_yesBalanceOf(t), market.s_noBalanceOf(t));
         if (m < 1e18) {
             nSkipped++;
             return;
@@ -291,7 +294,7 @@ contract SimHighActivity is Test {
         uint256 before = market.priceYes() / 1e16;
         vm.prank(whale);
         market.buy(PredictionMarket.Outcome.Yes, 100_000e18, 0);
-        whaleShares = market.yesBalanceOf(whale);
+        whaleShares = market.s_yesBalanceOf(whale);
         totalBuyVolume += 100_000e18;
         nBuys++;
         console2.log(
@@ -301,13 +304,20 @@ contract SimHighActivity is Test {
         );
         console2.log(
             string.concat(
-                "   whale received ", _usd(whaleShares), " YES for 100,000 paid -> avg ",
-                vm.toString(100_000e18 * 100 / whaleShares), "c/share"
+                "   whale received ",
+                _usd(whaleShares),
+                " YES for 100,000 paid -> avg ",
+                vm.toString(100_000e18 * 100 / whaleShares),
+                "c/share"
             )
         );
         console2.log(
             string.concat(
-                "   reserves now Y/N = ", _usd(market.reserveYes()), " / ", _usd(market.reserveNo()), " (YES side drained)"
+                "   reserves now Y/N = ",
+                _usd(market.s_reserveYes()),
+                " / ",
+                _usd(market.s_reserveNo()),
+                " (YES side drained)"
             )
         );
         console2.log("");
@@ -324,11 +334,19 @@ contract SimHighActivity is Test {
     function _snap(uint256 i) internal view {
         console2.log(
             string.concat(
-                "tx#", vm.toString(i),
-                " | YES ", vm.toString(market.priceYes() / 1e16), "c",
-                " | r ", _usd(market.reserveYes()), "/", _usd(market.reserveNo()),
-                " | vol ", _usd(totalBuyVolume + totalSellVolume),
-                " | fees ", _usd(market.collectedFees())
+                "tx#",
+                vm.toString(i),
+                " | YES ",
+                vm.toString(market.priceYes() / 1e16),
+                "c",
+                " | r ",
+                _usd(market.s_reserveYes()),
+                "/",
+                _usd(market.s_reserveNo()),
+                " | vol ",
+                _usd(totalBuyVolume + totalSellVolume),
+                " | fees ",
+                _usd(musdt.balanceOf(feeVault))
             )
         );
     }

@@ -17,6 +17,7 @@ contract PredictionMarketTest is Test {
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal carol = makeAddr("carol");
+    address internal feeVault = makeAddr("feeVault"); // all trading fees route here
 
     uint256 internal closeTime;
     uint16 internal constant FEE_BPS = 200; // 2%
@@ -35,7 +36,7 @@ contract PredictionMarketTest is Test {
         console2.log("block.timestamp now :", block.timestamp);
         console2.log("market closeTime    :", closeTime);
 
-        market = new PredictionMarket(collateral, resolver, closeTime, FEE_BPS);
+        market = new PredictionMarket(collateral, resolver, closeTime, FEE_BPS, feeVault);
         console2.log("Deployed PredictionMarket at:", address(market));
         console2.log("  resolver:", resolver);
         console2.log("  feeBps  :", FEE_BPS);
@@ -49,10 +50,10 @@ contract PredictionMarketTest is Test {
     /// @dev Print the pool's core state. Prices only exist once the pool is funded.
     function _logMarket(string memory label, PredictionMarket m) internal view {
         console2.log(string.concat("-- pool state: ", label, " --"));
-        console2.log("   reserveYes :", m.reserveYes());
-        console2.log("   reserveNo  :", m.reserveNo());
-        console2.log("   totalShares:", m.totalShares());
-        if (m.totalShares() > 0) {
+        console2.log("   reserveYes :", m.s_reserveYes());
+        console2.log("   reserveNo  :", m.s_reserveNo());
+        console2.log("   totalShares:", m.s_totalShares());
+        if (m.s_totalShares() > 0) {
             console2.log("   priceYes(/1e18):", m.priceYes());
             console2.log("   priceNo (/1e18):", m.priceNo());
         } else {
@@ -64,9 +65,9 @@ contract PredictionMarketTest is Test {
     function _logActor(string memory name, address who, PredictionMarket m) internal view {
         console2.log(string.concat("   [", name, "]"));
         console2.log("     collateral:", collateral.balanceOf(who));
-        console2.log("     YES       :", m.yesBalanceOf(who));
-        console2.log("     NO        :", m.noBalanceOf(who));
-        console2.log("     LP shares :", m.sharesOf(who));
+        console2.log("     YES       :", m.s_yesBalanceOf(who));
+        console2.log("     NO        :", m.s_noBalanceOf(who));
+        console2.log("     LP shares :", m.s_sharesOf(who));
     }
 
     function _banner(string memory name) internal pure {
@@ -103,38 +104,45 @@ contract PredictionMarketTest is Test {
         console2.log("");
         console2.log("==================== test_Constructor_SetsImmutables ====================");
         console2.log("Reading immutables back from the deployed market:");
-        console2.log("  collateral:", address(market.collateral()));
-        console2.log("  resolver  :", market.resolver());
-        console2.log("  closeTime :", market.closeTime());
-        console2.log("  feeBps    :", market.feeBps());
-        console2.log("  winningOutcome (0=Unset):", uint256(market.winningOutcome()));
-        assertEq(address(market.collateral()), address(collateral), "collateral set");
-        assertEq(market.resolver(), resolver, "resolver set");
-        assertEq(market.closeTime(), closeTime, "closeTime set");
-        assertEq(market.feeBps(), FEE_BPS, "feeBps set");
+        console2.log("  collateral:", address(market.i_collateral()));
+        console2.log("  resolver  :", market.i_resolver());
+        console2.log("  closeTime :", market.i_closeTime());
+        console2.log("  feeBps    :", market.i_feeBps());
+        console2.log("  winningOutcome (0=Unset):", uint256(market.s_winningOutcome()));
+        assertEq(address(market.i_collateral()), address(collateral), "collateral set");
+        assertEq(market.i_resolver(), resolver, "resolver set");
+        assertEq(market.i_closeTime(), closeTime, "closeTime set");
+        assertEq(market.i_feeBps(), FEE_BPS, "feeBps set");
         // Outcome enum's first member (Unset) is the default value 0 for a fresh market.
-        assertEq(uint256(market.winningOutcome()), uint256(PredictionMarket.Outcome.Unset), "unresolved");
+        assertEq(uint256(market.s_winningOutcome()), uint256(PredictionMarket.Outcome.Unset), "unresolved");
     }
 
     function test_Constructor_RevertsOnZeroResolver() public {
         _banner("test_Constructor_RevertsOnZeroResolver");
         console2.log("Deploying with resolver = address(0) -> expect revert ZeroResolver");
         vm.expectRevert(PredictionMarket.PredictionMarket__ZeroResolver.selector);
-        new PredictionMarket(collateral, address(0), closeTime, FEE_BPS);
+        new PredictionMarket(collateral, address(0), closeTime, FEE_BPS, feeVault);
     }
 
     function test_Constructor_RevertsOnPastCloseTime() public {
         _banner("test_Constructor_RevertsOnPastCloseTime");
         console2.log("Deploying with closeTime = now -> expect revert CloseTimeInPast");
         vm.expectRevert(PredictionMarket.PredictionMarket__CloseTimeInPast.selector);
-        new PredictionMarket(collateral, resolver, block.timestamp, FEE_BPS);
+        new PredictionMarket(collateral, resolver, block.timestamp, FEE_BPS, feeVault);
     }
 
     function test_Constructor_RevertsOnFeeTooHigh() public {
         _banner("test_Constructor_RevertsOnFeeTooHigh");
         console2.log("Deploying with feeBps = 10000 (100%) -> expect revert FeeTooHigh");
         vm.expectRevert(PredictionMarket.PredictionMarket__FeeTooHigh.selector);
-        new PredictionMarket(collateral, resolver, closeTime, 10_000); // 100% not allowed
+        new PredictionMarket(collateral, resolver, closeTime, 10_000, feeVault); // 100% not allowed
+    }
+
+    function test_Constructor_RevertsOnZeroFeeVault() public {
+        _banner("test_Constructor_RevertsOnZeroFeeVault");
+        console2.log("Deploying with feeVault = address(0) -> expect revert ZeroFeeVault");
+        vm.expectRevert(PredictionMarket.PredictionMarket__ZeroFeeVault.selector);
+        new PredictionMarket(collateral, resolver, closeTime, FEE_BPS, address(0));
     }
 
     // ==============================================================================
@@ -162,8 +170,8 @@ contract PredictionMarketTest is Test {
         console2.log("market collateral balance:", collateral.balanceOf(address(market)));
 
         // Alice now holds a full set: equal YES and NO.
-        assertEq(market.yesBalanceOf(alice), 100e18, "YES minted");
-        assertEq(market.noBalanceOf(alice), 100e18, "NO minted");
+        assertEq(market.s_yesBalanceOf(alice), 100e18, "YES minted");
+        assertEq(market.s_noBalanceOf(alice), 100e18, "NO minted");
         // Her collateral moved into the market contract.
         assertEq(collateral.balanceOf(alice), 0, "alice paid collateral");
         assertEq(collateral.balanceOf(address(market)), 100e18, "market holds collateral");
@@ -182,8 +190,8 @@ contract PredictionMarketTest is Test {
         _logActor("alice after merge", alice, market);
 
         // Back to square one: no outcome tokens, full collateral returned.
-        assertEq(market.yesBalanceOf(alice), 0, "YES burned");
-        assertEq(market.noBalanceOf(alice), 0, "NO burned");
+        assertEq(market.s_yesBalanceOf(alice), 0, "YES burned");
+        assertEq(market.s_noBalanceOf(alice), 0, "NO burned");
         assertEq(collateral.balanceOf(alice), 100e18, "collateral returned");
         assertEq(collateral.balanceOf(address(market)), 0, "market emptied");
     }
@@ -217,7 +225,7 @@ contract PredictionMarketTest is Test {
         market.split(100e18);
 
         // Every YES is paired with a NO (a full set), and each set is backed by 1 collateral.
-        uint256 outstandingSets = market.yesBalanceOf(alice); // == noBalanceOf(alice)
+        uint256 outstandingSets = market.s_yesBalanceOf(alice); // == noBalanceOf(alice)
         console2.log("outstanding complete sets:", outstandingSets);
         console2.log("market collateral held   :", collateral.balanceOf(address(market)));
         console2.log("=> held == sets  (solvent)");
@@ -232,7 +240,7 @@ contract PredictionMarketTest is Test {
 
     /// @dev Deploy a 0-fee market and give alice & bob a big collateral allowance.
     function _setUpNoFeeMarket() internal {
-        mkt = new PredictionMarket(collateral, resolver, closeTime, 0);
+        mkt = new PredictionMarket(collateral, resolver, closeTime, 0, feeVault);
         console2.log("Deployed FEE-FREE market at:", address(mkt));
         collateral.mint(alice, 1_000_000);
         collateral.mint(bob, 1_000_000);
@@ -254,10 +262,10 @@ contract PredictionMarketTest is Test {
         _logMarket("after funding", mkt);
         _logActor("alice", alice, mkt);
 
-        assertEq(mkt.reserveYes(), 1000, "rY seeded");
-        assertEq(mkt.reserveNo(), 1000, "rN seeded");
-        assertEq(mkt.totalShares(), 1000, "shares minted");
-        assertEq(mkt.sharesOf(alice), 1000, "alice owns all shares");
+        assertEq(mkt.s_reserveYes(), 1000, "rY seeded");
+        assertEq(mkt.s_reserveNo(), 1000, "rN seeded");
+        assertEq(mkt.s_totalShares(), 1000, "shares minted");
+        assertEq(mkt.s_sharesOf(alice), 1000, "alice owns all shares");
         // Equal reserves => 0.50 each (0.5 * 1e18 = 5e17), and they sum to WAD.
         assertEq(mkt.priceYes(), 5e17, "priceYes = 0.50");
         assertEq(mkt.priceNo(), 5e17, "priceNo = 0.50");
@@ -291,12 +299,12 @@ contract PredictionMarketTest is Test {
         // surplus YES to carol = 1000 - 250 = 750; reserves -> 750/3000.
         assertEq(mkt.priceYes(), priceBefore, "price preserved across funding");
         assertEq(mkt.priceYes(), 8e17, "still 0.80");
-        assertEq(mkt.sharesOf(carol), 500, "carol minted proportional shares");
-        assertEq(mkt.yesBalanceOf(carol), 750, "carol got surplus YES");
-        assertEq(mkt.noBalanceOf(carol), 0, "no NO surplus (NO was the larger reserve)");
-        assertEq(mkt.reserveYes(), 750, "rY grew proportionally");
-        assertEq(mkt.reserveNo(), 3000, "rN grew proportionally");
-        assertEq(mkt.totalShares(), 1500, "total shares 1000 + 500");
+        assertEq(mkt.s_sharesOf(carol), 500, "carol minted proportional shares");
+        assertEq(mkt.s_yesBalanceOf(carol), 750, "carol got surplus YES");
+        assertEq(mkt.s_noBalanceOf(carol), 0, "no NO surplus (NO was the larger reserve)");
+        assertEq(mkt.s_reserveYes(), 750, "rY grew proportionally");
+        assertEq(mkt.s_reserveNo(), 3000, "rN grew proportionally");
+        assertEq(mkt.s_totalShares(), 1500, "total shares 1000 + 500");
     }
 
     function test_Price_RevertsBeforeFunding() public {
@@ -327,15 +335,15 @@ contract PredictionMarketTest is Test {
         _logMarket("after bob's YES buy", mkt);
         _logActor("bob", bob, mkt);
 
-        assertEq(mkt.yesBalanceOf(bob), 1500, "bob got 1500 YES");
-        assertEq(mkt.reserveYes(), 500, "rY' = 500");
-        assertEq(mkt.reserveNo(), 2000, "rN' = 2000");
+        assertEq(mkt.s_yesBalanceOf(bob), 1500, "bob got 1500 YES");
+        assertEq(mkt.s_reserveYes(), 500, "rY' = 500");
+        assertEq(mkt.s_reserveNo(), 2000, "rN' = 2000");
         // Buying YES pushed YES price up to 0.80 and NO down to 0.20.
         assertEq(mkt.priceYes(), 8e17, "priceYes = 0.80");
         assertEq(mkt.priceNo(), 2e17, "priceNo = 0.20");
         // k is preserved (here exactly): 500 * 2000 == 1000 * 1000.
-        console2.log("k before:", uint256(1000 * 1000), " k after:", mkt.reserveYes() * mkt.reserveNo());
-        assertEq(mkt.reserveYes() * mkt.reserveNo(), 1000 * 1000, "k preserved");
+        console2.log("k before:", uint256(1000 * 1000), " k after:", mkt.s_reserveYes() * mkt.s_reserveNo());
+        assertEq(mkt.s_reserveYes() * mkt.s_reserveNo(), 1000 * 1000, "k preserved");
     }
 
     function test_Buy_RevertsOnSlippage() public {
@@ -433,8 +441,8 @@ contract PredictionMarketTest is Test {
         vm.prank(bob);
         mkt.buy(PredictionMarket.Outcome.Yes, 1000, 1500);
 
-        uint256 totalYes = mkt.reserveYes() + mkt.yesBalanceOf(bob);
-        uint256 totalNo = mkt.reserveNo() + mkt.noBalanceOf(bob);
+        uint256 totalYes = mkt.s_reserveYes() + mkt.s_yesBalanceOf(bob);
+        uint256 totalNo = mkt.s_reserveNo() + mkt.s_noBalanceOf(bob);
         uint256 held = collateral.balanceOf(address(mkt));
         console2.log("total YES in existence:", totalYes);
         console2.log("total NO  in existence:", totalNo);
@@ -458,9 +466,10 @@ contract PredictionMarketTest is Test {
         collateral.approve(address(market), type(uint256).max);
     }
 
-    /// @notice After a buy on a 2% market, exactly the fee stays behind as bare collateral.
-    function test_Fee_BuyRetainsTwoPercent() public {
-        _banner("test_Fee_BuyRetainsTwoPercent");
+    /// @notice After a buy on a 2% market, the fee leaves to the vault — the market keeps NO
+    ///         buffer (held == backing exactly), and the vault holds exactly the 2% fee.
+    function test_Fee_BuyRoutesFeeToVault() public {
+        _banner("test_Fee_BuyRoutesFeeToVault");
         _seedFeeMarket(alice);
         _seedFeeMarket(bob);
 
@@ -468,23 +477,24 @@ contract PredictionMarketTest is Test {
         market.addLiquidity(1000); // rY = rN = 1000
         console2.log("alice funded fee-market 1000/1000");
 
-        // x = 1000 * (10000-200)/10000 = 980 enters the curve; 20 is the fee.
+        // x = 1000 * (10000-200)/10000 = 980 enters the curve; 20 is the fee -> vault.
         vm.prank(bob);
         market.buy(PredictionMarket.Outcome.Yes, 1000, 0);
         _logMarket("after bob buys YES w/ 1000 (fee 2%)", market);
         _logActor("bob", bob, market);
 
         uint256 held = collateral.balanceOf(address(market));
-        uint256 totalYes = market.reserveYes() + market.yesBalanceOf(bob);
-        uint256 totalNo = market.reserveNo() + market.noBalanceOf(bob);
+        uint256 totalYes = market.s_reserveYes() + market.s_yesBalanceOf(bob);
+        uint256 totalNo = market.s_reserveNo() + market.s_noBalanceOf(bob);
         console2.log("collateral held :", held);
         console2.log("total YES       :", totalYes);
         console2.log("total NO        :", totalNo);
-        console2.log("fee buffer (held - totalNO):", held - totalNo);
+        console2.log("vault balance   :", collateral.balanceOf(feeVault));
 
-        // The fee buffer = collateral that is NOT backing any outcome token = the 2% fee.
-        assertEq(held - totalNo, 20, "fee buffer == 2% of 1000");
-        assertEq(held - totalYes, 20, "fee buffer the same vs YES side");
+        // No buffer: the contract holds exactly the backing, and the 2% fee is in the vault.
+        assertEq(held, totalNo, "no fee buffer: held == backing (NO side)");
+        assertEq(held, totalYes, "no fee buffer: held == backing (YES side)");
+        assertEq(collateral.balanceOf(feeVault), 20, "fee (2% of 1000) routed to the vault");
     }
 
     /// @notice A fee buyer receives fewer shares than they would on a fee-free market.
@@ -520,7 +530,7 @@ contract PredictionMarketTest is Test {
 
         vm.prank(bob);
         market.buy(PredictionMarket.Outcome.Yes, 1000, 0);
-        uint256 received = market.yesBalanceOf(bob);
+        uint256 received = market.s_yesBalanceOf(bob);
         console2.log("bob received YES:", received);
 
         // How many YES would bob need to return to get his full 1000 back?
@@ -530,9 +540,10 @@ contract PredictionMarketTest is Test {
         assertGt(needed, received, "fee makes a full round-trip impossible");
     }
 
-    /// @notice The fee buffer keeps the market strictly OVER-collateralized (extra safety).
-    function test_Fee_LeavesPositiveBuffer() public {
-        _banner("test_Fee_LeavesPositiveBuffer");
+    /// @notice With fees routed out, the market keeps NO buffer: held == obligations exactly,
+    ///         and the fee sits in the vault (not in the market).
+    function test_Fee_LeavesNoBuffer_FeeInVault() public {
+        _banner("test_Fee_LeavesNoBuffer_FeeInVault");
         _seedFeeMarket(alice);
         _seedFeeMarket(bob);
         vm.prank(alice);
@@ -541,9 +552,11 @@ contract PredictionMarketTest is Test {
         market.buy(PredictionMarket.Outcome.Yes, 1000, 0);
 
         uint256 held = collateral.balanceOf(address(market));
-        uint256 totalYes = market.reserveYes() + market.yesBalanceOf(bob);
+        uint256 totalYes = market.s_reserveYes() + market.s_yesBalanceOf(bob);
         console2.log("held:", held, " totalYES:", totalYes);
-        assertGt(held, totalYes, "fee buffer makes held strictly > obligations");
+        console2.log("vault holds the fee:", collateral.balanceOf(feeVault));
+        assertEq(held, totalYes, "no buffer: held == obligations exactly");
+        assertEq(collateral.balanceOf(feeVault), 20, "the fee lives in the vault");
     }
 
     // ==============================================================================
@@ -564,49 +577,51 @@ contract PredictionMarketTest is Test {
 
         // Balanced pool, no trades -> all reserves merge back to collateral, no residual.
         assertEq(collateral.balanceOf(alice), 1_000_000, "alice fully recovered her deposit");
-        assertEq(mkt.reserveYes(), 0, "reserves drained");
-        assertEq(mkt.reserveNo(), 0, "reserves drained");
-        assertEq(mkt.totalShares(), 0, "all shares burned");
-        assertEq(mkt.yesBalanceOf(alice), 0, "no residual YES");
-        assertEq(mkt.noBalanceOf(alice), 0, "no residual NO");
+        assertEq(mkt.s_reserveYes(), 0, "reserves drained");
+        assertEq(mkt.s_reserveNo(), 0, "reserves drained");
+        assertEq(mkt.s_totalShares(), 0, "all shares burned");
+        assertEq(mkt.s_yesBalanceOf(alice), 0, "no residual YES");
+        assertEq(mkt.s_noBalanceOf(alice), 0, "no residual NO");
     }
 
-    /// @notice After trades, the sole LP exits with collateral + their fees + a residual
-    ///         (one-sided) outcome position — illustrating LP directional risk.
-    function test_RemoveLiquidity_RecoversFeesAndResidual() public {
-        _banner("test_RemoveLiquidity_RecoversFeesAndResidual");
+    /// @notice After trades, the sole LP exits with the merged collateral + a residual
+    ///         (one-sided) outcome position. Fees are NOT recovered — they were routed to the
+    ///         vault on the trade. LPs now bear directional risk for zero fee reward in this market.
+    function test_RemoveLiquidity_RecoversMergedSetsAndResidual_NoLpFees() public {
+        _banner("test_RemoveLiquidity_RecoversMergedSetsAndResidual_NoLpFees");
         _seedFeeMarket(alice);
         _seedFeeMarket(bob);
         vm.prank(alice);
         market.addLiquidity(1000); // alice: 1,000,000 -> 999,000
         vm.prank(bob);
-        market.buy(PredictionMarket.Outcome.Yes, 1000, 0); // reserves 506/1980, collectedFees 20
+        market.buy(PredictionMarket.Outcome.Yes, 1000, 0); // reserves 506/1980, fee 20 -> vault
 
-        assertEq(market.collectedFees(), 20, "2% fee accrued");
+        assertEq(collateral.balanceOf(feeVault), 20, "2% fee routed to the vault");
         _logMarket("before alice exits", market);
 
         vm.prank(alice);
         market.removeLiquidity(1000); // sole LP burns all shares
         _logActor("alice after exit", alice, market);
 
-        // sendYes=506, sendNo=1980, feeShare=20, mergeable=506 -> collateralOut=506+20=526,
+        // sendYes=506, sendNo=1980, mergeable=506 -> collateralOut=506 (NO fee component),
         // residual NO = 1980-506 = 1474.
-        assertEq(collateral.balanceOf(alice), 999_000 + 526, "collateral = merged sets + fees");
-        assertEq(market.noBalanceOf(alice), 1474, "residual NO position (directional risk)");
-        assertEq(market.yesBalanceOf(alice), 0, "no residual YES");
-        assertEq(market.collectedFees(), 0, "all fees withdrawn by the LP");
-        assertEq(market.reserveYes(), 0, "reserves drained");
-        assertEq(market.reserveNo(), 0, "reserves drained");
+        assertEq(collateral.balanceOf(alice), 999_000 + 506, "collateral = merged sets only (LPs earn no fees)");
+        assertEq(market.s_noBalanceOf(alice), 1474, "residual NO position (directional risk)");
+        assertEq(market.s_yesBalanceOf(alice), 0, "no residual YES");
+        assertEq(collateral.balanceOf(feeVault), 20, "fees stay in the vault, never paid to the LP");
+        assertEq(market.s_reserveYes(), 0, "reserves drained");
+        assertEq(market.s_reserveNo(), 0, "reserves drained");
 
-        // Solvency: contract still backs bob's 1474 YES and alice's 1474 NO exactly.
+        // Solvency: contract still backs bob's 1474 YES and alice's 1474 NO exactly (no fee buffer).
         uint256 held = collateral.balanceOf(address(market));
         console2.log("held after exit:", held, " (backs bob's 1474 YES / alice's 1474 NO)");
         assertEq(held, 1474, "contract holds exactly the outstanding backing");
     }
 
-    /// @notice Two equal LPs split accrued fees proportionally (50/50 here).
-    function test_RemoveLiquidity_TwoLPsSplitFeesProportionally() public {
-        _banner("test_RemoveLiquidity_TwoLPsSplitFeesProportionally");
+    /// @notice Fees route entirely to the vault — LPs never receive any, regardless of how many
+    ///         LPs there are or when they exit. (Replaces the old "two LPs split fees" behavior.)
+    function test_Fees_RouteToVault_NotSplitAmongLPs() public {
+        _banner("test_Fees_RouteToVault_NotSplitAmongLPs");
         _seedFeeMarket(alice);
         _seedFeeMarket(bob);
         _seedFeeMarket(carol);
@@ -616,24 +631,21 @@ contract PredictionMarketTest is Test {
         vm.prank(bob);
         market.addLiquidity(1000); // balanced 50/50 -> bob mints 1000 shares; total 2000
 
-        // carol trades, generating fees.
+        // carol trades, generating a fee that goes straight to the vault.
         vm.prank(carol);
         market.buy(PredictionMarket.Outcome.Yes, 1000, 0);
-        uint256 fees = market.collectedFees();
-        console2.log("fees accrued from carol's trade:", fees);
-        assertEq(fees, 20, "2% of 1000");
+        console2.log("vault balance after carol's trade:", collateral.balanceOf(feeVault));
+        assertEq(collateral.balanceOf(feeVault), 20, "2% of 1000 routed to the vault");
 
-        // alice owns 1000/2000 = 50% -> should withdraw half the fees.
+        // alice exits: she gets her proportional reserves, but NO fee bonus -> vault unchanged.
         vm.prank(alice);
         market.removeLiquidity(1000);
-        console2.log("collectedFees after alice exits:", market.collectedFees());
-        assertEq(market.collectedFees(), 10, "alice took half the fees");
+        assertEq(collateral.balanceOf(feeVault), 20, "vault unchanged: LP exit pays no fees");
 
-        // bob now owns 1000/1000 = 100% of the remaining pool -> takes the rest.
+        // bob exits: same -> the vault still holds 100% of the fees.
         vm.prank(bob);
         market.removeLiquidity(1000);
-        console2.log("collectedFees after bob exits:", market.collectedFees());
-        assertEq(market.collectedFees(), 0, "bob took the other half");
+        assertEq(collateral.balanceOf(feeVault), 20, "vault keeps all fees after both LPs exit");
     }
 
     function test_RemoveLiquidity_RevertsOnTooManyShares() public {
@@ -726,8 +738,8 @@ contract PredictionMarketTest is Test {
         vm.prank(resolver);
         mkt.resolve(PredictionMarket.Outcome.Yes);
 
-        console2.log("winningOutcome (1=Yes):", uint256(mkt.winningOutcome()));
-        assertEq(uint256(mkt.winningOutcome()), uint256(PredictionMarket.Outcome.Yes), "winner recorded");
+        console2.log("winningOutcome (1=Yes):", uint256(mkt.s_winningOutcome()));
+        assertEq(uint256(mkt.s_winningOutcome()), uint256(PredictionMarket.Outcome.Yes), "winner recorded");
     }
 
     // ------- redeem(): payouts -------
@@ -765,8 +777,8 @@ contract PredictionMarketTest is Test {
         _logActor("alice after redeem", alice, mkt);
 
         assertEq(collateral.balanceOf(alice), 1_000_000, "alice made whole 1:1 on her YES");
-        assertEq(mkt.yesBalanceOf(alice), 0, "winning balance zeroed");
-        assertEq(mkt.noBalanceOf(alice), 100, "losing NO left untouched (worth 0)");
+        assertEq(mkt.s_yesBalanceOf(alice), 0, "winning balance zeroed");
+        assertEq(mkt.s_noBalanceOf(alice), 100, "losing NO left untouched (worth 0)");
 
         console2.log("alice redeems again -> nothing left -> expect NothingToRedeem");
         vm.prank(alice);
@@ -821,7 +833,7 @@ contract PredictionMarketTest is Test {
 
         // --- Post-resolution solvency invariant: held >= reserve(winner) + sum winning balances ---
         uint256 held = collateral.balanceOf(address(mkt));
-        uint256 winningClaims = mkt.reserveYes() + mkt.yesBalanceOf(bob); // alice has 0 YES yet
+        uint256 winningClaims = mkt.s_reserveYes() + mkt.s_yesBalanceOf(bob); // alice has 0 YES yet
         console2.log("held:", held, " reserve(YES)+winningBalances:", winningClaims);
         assertGe(held, winningClaims, "solvent: collateral covers every winning claim");
 
@@ -830,8 +842,8 @@ contract PredictionMarketTest is Test {
         mkt.removeLiquidity(1000); // sole LP: merges 500 sets -> 500 collateral, keeps 1500 residual NO
         _logActor("alice after LP exit", alice, mkt);
         assertEq(collateral.balanceOf(alice), 999_000 + 500, "alice got 500 from merged sets");
-        assertEq(mkt.noBalanceOf(alice), 1500, "alice holds 1500 NO (the losing side)");
-        assertEq(mkt.yesBalanceOf(alice), 0, "alice has no winning YES");
+        assertEq(mkt.s_noBalanceOf(alice), 1500, "alice holds 1500 NO (the losing side)");
+        assertEq(mkt.s_yesBalanceOf(alice), 0, "alice has no winning YES");
 
         // alice holds only losing NO -> redeem reverts (nothing to claim).
         vm.prank(alice);
@@ -849,66 +861,65 @@ contract PredictionMarketTest is Test {
         assertEq(collateral.balanceOf(alice), 1_000_000 - 500, "losing LP: -500 (zero-sum)");
     }
 
-    /// @notice With fees, the post-resolution buffer == collectedFees: the market is strictly
-    ///         OVER-collateralized against winning claims, and that surplus is the LP fee pot.
-    function test_PostResolution_FeeBufferIsSolvent() public {
-        _banner("test_PostResolution_FeeBufferIsSolvent");
+    /// @notice With fees routed out, there is NO post-resolution buffer: held == winning claims
+    ///         exactly, and the fee sits in the vault (not in the market).
+    function test_PostResolution_NoBuffer_FeesInVault() public {
+        _banner("test_PostResolution_NoBuffer_FeesInVault");
         _seedFeeMarket(alice);
         _seedFeeMarket(bob);
         vm.prank(alice);
         market.addLiquidity(1000);
         vm.prank(bob);
-        market.buy(PredictionMarket.Outcome.Yes, 1000, 0); // reserves 506/1980, fee 20, bob 1474 YES
+        market.buy(PredictionMarket.Outcome.Yes, 1000, 0); // reserves 506/1980, fee 20 -> vault, bob 1474 YES
 
         vm.warp(closeTime);
         vm.prank(resolver);
         market.resolve(PredictionMarket.Outcome.Yes);
 
         uint256 held = collateral.balanceOf(address(market));
-        uint256 winningClaims = market.reserveYes() + market.yesBalanceOf(bob); // 506 + 1474 = 1980
+        uint256 winningClaims = market.s_reserveYes() + market.s_yesBalanceOf(bob); // 506 + 1474 = 1980
         console2.log("held:", held, " winning claims:", winningClaims);
-        console2.log("buffer (held - claims):", held - winningClaims, " collectedFees:", market.collectedFees());
-        assertGe(held, winningClaims, "solvent against all winning claims");
-        assertEq(held - winningClaims, market.collectedFees(), "the surplus is exactly the LP fee pot");
+        console2.log("vault holds the fee:", collateral.balanceOf(feeVault));
+        assertEq(held, winningClaims, "exactly solvent: held == winning claims (no fee buffer)");
+        assertEq(collateral.balanceOf(feeVault), 20, "the fee lives in the vault, not the market");
     }
 
     // ==============================================================================
-    // Stage 8: hardening — audit finding #1 (JIT-liquidity fee theft)
-    // A just-in-time LP that deposits AFTER fees have already accrued must NOT be able to
-    // skim those pre-existing fees; it should earn only fees from trades that happen while
-    // its shares are live. (feePoolWeight accumulator fix.)
+    // Stage 8: hardening — JIT-liquidity fee theft is now STRUCTURALLY impossible
+    // The original audit finding #1 was that a just-in-time LP could skim already-accrued LP
+    // fees. With every fee routed to the vault (LPs earn none), there is nothing to skim — the
+    // attack surface is gone entirely. This test pins that property down.
     // ==============================================================================
 
-    function test_Fee_JITLPCannotSkimPreAccruedFees() public {
-        _banner("test_Fee_JITLPCannotSkimPreAccruedFees");
+    function test_Fee_JITLPCannotTouchVaultFees() public {
+        _banner("test_Fee_JITLPCannotTouchVaultFees");
         _seedFeeMarket(alice); // honest LP
         _seedFeeMarket(bob); // trader
         _seedFeeMarket(carol); // JIT attacker
 
-        // alice is the sole LP; bob trades, accruing 20 in fees BEFORE carol shows up.
+        // alice is the sole LP; bob trades, sending 20 in fees to the vault BEFORE carol shows up.
         vm.prank(alice);
         market.addLiquidity(1000); // reserves 1000/1000, shares 1000
         vm.prank(bob);
-        market.buy(PredictionMarket.Outcome.Yes, 1000, 0); // fee 20 -> collectedFees=20, reserves 506/1980
-        assertEq(market.collectedFees(), 20, "fees accrued from bob's trade");
+        market.buy(PredictionMarket.Outcome.Yes, 1000, 0); // fee 20 -> vault, reserves 506/1980
+        assertEq(collateral.balanceOf(feeVault), 20, "fee routed to the vault");
 
         uint256 carolStart = collateral.balanceOf(carol); // 1_000_000
 
         // carol JITs: add liquidity, immediately remove, then merge her residual matched set.
         vm.startPrank(carol);
         market.addLiquidity(1980); // mints 1000 shares (poolWeight=1980)
-        market.removeLiquidity(market.sharesOf(carol));
-        uint256 yc = market.yesBalanceOf(carol);
-        uint256 nc = market.noBalanceOf(carol);
+        market.removeLiquidity(market.s_sharesOf(carol));
+        uint256 yc = market.s_yesBalanceOf(carol);
+        uint256 nc = market.s_noBalanceOf(carol);
         uint256 set = yc < nc ? yc : nc; // matched complete set carol can merge back to collateral
         if (set > 0) market.merge(set);
         vm.stopPrank();
         _logActor("carol after JIT round-trip", carol, market);
 
-        // FIX: carol made no profit — she joined AFTER the fee accrued.
-        assertLe(collateral.balanceOf(carol), carolStart, "JIT LP must not profit from pre-accrued fees");
-        // FIX: the honest LP's fees are intact and still fully claimable.
-        assertEq(market.collectedFees(), 20, "pre-accrued fees stay with the honest LP");
+        // carol made no profit — there are no LP fees to skim, and the vault is untouchable by LPs.
+        assertLe(collateral.balanceOf(carol), carolStart, "JIT LP gains nothing (no LP fees exist)");
+        assertEq(collateral.balanceOf(feeVault), 20, "vault fees are untouchable by a JIT LP");
     }
 
     // ==============================================================================
@@ -930,18 +941,19 @@ contract PredictionMarketTest is Test {
         vm.startPrank(alice);
         collateral.approve(address(market), amount);
         market.split(amount);
-        assertEq(market.yesBalanceOf(alice), amount, "YES minted");
-        assertEq(market.noBalanceOf(alice), amount, "NO minted");
+        assertEq(market.s_yesBalanceOf(alice), amount, "YES minted");
+        assertEq(market.s_noBalanceOf(alice), amount, "NO minted");
         market.merge(amount);
         vm.stopPrank();
-        assertEq(market.yesBalanceOf(alice), 0, "YES burned");
-        assertEq(market.noBalanceOf(alice), 0, "NO burned");
+        assertEq(market.s_yesBalanceOf(alice), 0, "YES burned");
+        assertEq(market.s_noBalanceOf(alice), 0, "NO burned");
         assertEq(collateral.balanceOf(alice), amount, "collateral fully restored");
         assertEq(collateral.balanceOf(address(market)), 0, "market emptied");
     }
 
     /// @notice The core solvency equation holds after ANY single funded buy on the fee market:
-    ///         held == backing + collectedFees, and the two sides stay balanced (totalYES==totalNO).
+    ///         held == backing exactly (fees are routed out to the vault), and the two sides stay
+    ///         balanced (totalYES == totalNO).
     function testFuzz_BuyKeepsExactSolvency(uint256 fund, uint256 invest) public {
         fund = bound(fund, 1e3, FUZZ_MAX);
         invest = bound(invest, 1, FUZZ_MAX);
@@ -958,11 +970,11 @@ contract PredictionMarketTest is Test {
         market.buy(PredictionMarket.Outcome.Yes, invest, 0);
         vm.stopPrank();
 
-        uint256 totalYes = market.reserveYes() + market.yesBalanceOf(bob);
-        uint256 totalNo = market.reserveNo() + market.noBalanceOf(bob);
+        uint256 totalYes = market.s_reserveYes() + market.s_yesBalanceOf(bob);
+        uint256 totalNo = market.s_reserveNo() + market.s_noBalanceOf(bob);
         uint256 held = collateral.balanceOf(address(market));
         assertEq(totalYes, totalNo, "sets stay balanced (totalYES == totalNO)");
-        assertEq(held, totalYes + market.collectedFees(), "held == backing + fees (exact)");
+        assertEq(held, totalYes, "held == backing exactly (fees routed out to the vault)");
     }
 
     /// @notice YES price + NO price always sum to 1 (WAD) up to at most 1 wei of flooring.
