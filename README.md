@@ -20,15 +20,17 @@ https://book.getfoundry.sh/
 - RPC: `https://rpc.teiza-devnet.gateway.fm`
 - Explorer (Blockscout): https://explorer.teiza-devnet.gateway.fm
 
+Latest deploy (blocks 952106–952107), deployer & Vault admin `0xa480087F9083A9427b8723f177a16761a5aF9fC4`:
+
 | Contract | Address | Notes |
 | --- | --- | --- |
-| MockERC20 (mUSDT) | [`0x4921C68f4A34C4087aED3F9AF5c7A72c56dAdC07`](https://explorer.teiza-devnet.gateway.fm/address/0x4921C68f4A34C4087aED3F9AF5c7A72c56dAdC07) | **Current** standard collateral (`Mock USDT`); `mint` is public — **test only** |
-| MarketFactory | [`0x173b640805d98999FB8c238dC01E290a66A30ae3`](https://explorer.teiza-devnet.gateway.fm/address/0x173b640805d98999FB8c238dC01E290a66A30ae3) | **Current** factory; deploys binary `PredictionMarket`s |
-| MultiOutcomeMarket | [`0x575532C577F89e3b3d5d0bBABe6947D4d91570D6`](https://explorer.teiza-devnet.gateway.fm/address/0x575532C577F89e3b3d5d0bBABe6947D4d91570D6) | 2 outcome slots, 2% fee; resolver `0x3445…ef75`. Bound to the **legacy** mUSD collateral `0x89e4…AF99`, not mUSDT |
+| MockERC20 (mUSDT) | [`0x81A737852aC8dEBA2312BF336f71cE5af6cEe4e8`](https://explorer.teiza-devnet.gateway.fm/address/0x81A737852aC8dEBA2312BF336f71cE5af6cEe4e8) | **Current** standard collateral (`Mock USDT`); `mint` is public — **test only** |
+| MarketFactory | [`0xf5A69Ff33C11554C8bD8cCc708FA3ECcf93832e5`](https://explorer.teiza-devnet.gateway.fm/address/0xf5A69Ff33C11554C8bD8cCc708FA3ECcf93832e5) | **Current** factory; deploys binary `PredictionMarket`s (`createMarket` now takes a `feeVault` argument) |
+| Vault | [`0x0e3128ED498cBC04FDD278d0EfC396E3Ea555ac6`](https://explorer.teiza-devnet.gateway.fm/address/0x0e3128ED498cBC04FDD278d0EfC396E3Ea555ac6) | ERC20 payout vault holding mUSDT; admin/owner `0xa480…9fC4`. Open deposits, owner-only single & batch distribution |
 
-All contracts are source-verified on the explorer. These are **devnet/testing** deployments — not production.
+All three are source-verified on the explorer. These are **devnet/testing** deployments — not production.
 
-<sub>Superseded by the latest deploy (block 894459): earlier mUSD collateral `0x89e421920daF3D723Ab0B797B13b12D71e1CaF99` and MarketFactory `0x0DC33490e6B9c3D3FeD00D964E895cd402D74899`.</sub>
+<sub>Supersedes all earlier deploys, including MockERC20 `0x4921…dC07`, MarketFactory `0x173b…0ae3`, and MultiOutcomeMarket `0x5755…70D6` (not redeployed this round — deploy it separately if needed).</sub>
 
 ## Usage
 
@@ -64,8 +66,14 @@ $ anvil
 
 ### Deploy
 
+Deploy the core stack (mUSDT + MarketFactory + Vault, sharing one mUSDT, deployer as Vault admin)
+with a keystore account:
+
 ```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+$ forge script script/DeployCore.s.sol:DeployCore \
+    --rpc-url https://rpc.teiza-devnet.gateway.fm \
+    --account <keystore-name> --sender <deployer-address> \
+    --broadcast
 ```
 
 ### Cast
